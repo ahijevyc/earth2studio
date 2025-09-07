@@ -30,7 +30,7 @@ logging.basicConfig(
 class MPAS(DataSource):
     """
     A custom earth2studio data source for loading, processing, and regridding
-    a single MPAS model output file. This class handles the unstructured MPAS grid by
+    MPAS model output. This class handles the unstructured MPAS grid by
     regridding it to a regular lat-lon grid using a nearest-neighbor approach
     with a KDTree.
 
@@ -67,7 +67,7 @@ class MPAS(DataSource):
         # Compute or load regridding indices
         self.distance, self.indices = self._prepare_regridding_indices()
 
-        # Load grid cell count to validate against the data file
+        # Load grid cell count to validate against data file
         with xr.open_dataset(self.grid_path) as grid_ds:
             self.grid_ncells = grid_ds.sizes["nCells"]
 
@@ -85,25 +85,29 @@ class MPAS(DataSource):
             lon_cell = grid["lonCell"]
             lat_cell = grid["latCell"]
 
-            # Check units and convert to radians if necessary
-            if lon_cell.attrs.get("units", "degrees").lower() in ["rad", "radians"]:
-                logging.info("lonCell units are in radians. Using values directly.")
-                mpas_lon_rad = lon_cell.values
-            else:
-                logging.info(
-                    "Assuming lonCell units are in degrees. Converting to radians."
-                )
-                mpas_lon_rad = np.deg2rad(lon_cell.values)
+            # Function to determine units and convert to radians if needed
+            def process_coords(coord_da: xr.DataArray) -> np.ndarray:
+                units = coord_da.attrs.get("units", "unknown").lower()
+                values = coord_da.values
+                
+                if units in ["rad", "radians"]:
+                    logging.info(f"{coord_da.name} units are in radians. Using values directly.")
+                    return values
+                elif units in ["deg", "degrees"]:
+                    logging.info(f"{coord_da.name} units are in degrees. Converting to radians.")
+                    return np.deg2rad(values)
+                else: # No units or unknown units
+                    logging.info(f"{coord_da.name} units are not specified. Inferring from value range.")
+                    # Check if any values fall outside the typical radian range
+                    if np.any(np.abs(values) > 2 * np.pi):
+                        logging.info(f"Values found outside [-2*pi, 2*pi]. Assuming degrees and converting.")
+                        return np.deg2rad(values)
+                    else:
+                        logging.info(f"Values are within [-2*pi, 2*pi]. Assuming radians.")
+                        return values
 
-            if lat_cell.attrs.get("units", "degrees").lower() in ["rad", "radians"]:
-                logging.info("latCell units are in radians. Using values directly.")
-                mpas_lat_rad = lat_cell.values
-            else:
-                logging.info(
-                    "Assuming latCell units are in degrees. Converting to radians."
-                )
-                mpas_lat_rad = np.deg2rad(lat_cell.values)
-
+            mpas_lon_rad = process_coords(lon_cell)
+            mpas_lat_rad = process_coords(lat_cell)
             mpas_xyz = self._lon_lat_to_cartesian(mpas_lon_rad, mpas_lat_rad)
 
         target_lon_grid, target_lat_grid = np.meshgrid(self.target_lon, self.target_lat)

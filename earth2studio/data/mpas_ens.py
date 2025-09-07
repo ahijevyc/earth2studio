@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from earth2studio.data import DataSource
+from earth2studio.data.utils import datasource_cache_root, xtime
 from earth2studio.lexicon.mpas import MPASLexicon
 from scipy.spatial import KDTree
 
@@ -63,7 +64,7 @@ class MPAS(DataSource):
         # Compute or load regridding indices
         self.distance, self.indices = self._prepare_regridding_indices()
 
-        # Load grid cell count to validate against data files
+        # Load grid cell count to validate against data file
         with xr.open_dataset(self.grid_path) as grid_ds:
             self.grid_ncells = grid_ds.sizes["nCells"]
 
@@ -78,9 +79,33 @@ class MPAS(DataSource):
 
         logging.info("Building KDTree from MPAS grid to compute regridding indices...")
         with xr.open_dataset(self.grid_path) as grid:
-            mpas_xyz = self._lon_lat_to_cartesian(
-                grid["lonCell"].values, grid["latCell"].values
-            )
+            lon_cell = grid["lonCell"]
+            lat_cell = grid["latCell"]
+
+            # Function to determine units and convert to radians if needed
+            def process_coords(coord_da: xr.DataArray) -> np.ndarray:
+                units = coord_da.attrs.get("units", "unknown").lower()
+                values = coord_da.values
+                
+                if units in ["rad", "radians"]:
+                    logging.info(f"{coord_da.name} units are in radians. Using values directly.")
+                    return values
+                elif units in ["deg", "degrees"]:
+                    logging.info(f"{coord_da.name} units are in degrees. Converting to radians.")
+                    return np.deg2rad(values)
+                else: # No units or unknown units
+                    logging.info(f"{coord_da.name} units are not specified. Inferring from value range.")
+                    # Check if any values fall outside the typical radian range
+                    if np.any(np.abs(values) > 2 * np.pi):
+                        logging.info(f"Values found outside [-2*pi, 2*pi]. Assuming degrees and converting.")
+                        return np.deg2rad(values)
+                    else:
+                        logging.info(f"Values are within [-2*pi, 2*pi]. Assuming radians.")
+                        return values
+
+            mpas_lon_rad = process_coords(lon_cell)
+            mpas_lat_rad = process_coords(lat_cell)
+            mpas_xyz = self._lon_lat_to_cartesian(mpas_lon_rad, mpas_lat_rad)
 
         target_lon_grid, target_lat_grid = np.meshgrid(self.target_lon, self.target_lat)
         target_lon_rad = np.deg2rad(target_lon_grid.ravel())
@@ -96,11 +121,11 @@ class MPAS(DataSource):
         return distance, indices
 
     @staticmethod
-    def _lon_lat_to_cartesian(lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
+    def _lon_lat_to_cartesian(lon_rad: np.ndarray, lat_rad: np.ndarray) -> np.ndarray:
         """Converts lon/lat (radians) to 3D Cartesian coords for KDTree."""
-        x = np.cos(lat) * np.cos(lon)
-        y = np.cos(lat) * np.sin(lon)
-        z = np.sin(lat)
+        x = np.cos(lat_rad) * np.cos(lon_rad)
+        y = np.cos(lat_rad) * np.sin(lon_rad)
+        z = np.sin(lat_rad)
         return np.array([x, y, z]).T
 
     @lru_cache(maxsize=16)
