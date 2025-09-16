@@ -16,10 +16,10 @@ from metpy.constants import g
 # =============================================================================
 # Main IO Backend Class
 # =============================================================================
-class MPASInitBackend(IOBackend):
+class WPSBackend(IOBackend):
     """
     An IOBackend that writes earth2studio data to the WPS intermediate binary
-    format, suitable for initializing the MPAS-Atmosphere model and readable
+    format, suitable for initializing models like WRF or MPAS and readable
     by WPS utilities like rd_intermediate.exe.
     """
 
@@ -210,7 +210,7 @@ class MPASInitBackend(IOBackend):
                         self._write_wind_flag(f)
 
     def close(self):
-        logging.info("MPASInitBackend closed.")
+        logging.info("WPSBackend closed.")
         pass
 
 
