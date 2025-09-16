@@ -4,14 +4,17 @@
 import logging
 import re
 import struct
+from collections import OrderedDict
 from pathlib import Path
-from typing import OrderedDict
+from typing import IO, Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-from earth2studio.io import IOBackend
 from metpy.constants import g
+
+from earth2studio.io import IOBackend
+
 
 # =============================================================================
 # Main IO Backend Class
@@ -37,19 +40,19 @@ class WPSBackend(IOBackend):
         "u10m": ("U10", "m s-1", "10-meter U-wind", 10.0),
         "v10m": ("V10", "m s-1", "10-meter V-wind", 10.0),
     }
-    
-    # Format for the main header record (excluding the initial version number).
+
+    # Format strings based on the reference Fortran source.
     # Using '>' for big-endian byte order to match the WPS standard.
     HEADER_FORMAT = "> 24s f 32s 9s 25s 46s f i i i"
-    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
-
+    PROJECTION_FORMAT_LATLON = "> 8s f f f f f"
 
     def __init__(
         self,
         path: Path,
         map_source: str = "earth2studio",
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the WPSBackend."""
         super().__init__()
         self.path = path
         self.map_source = map_source
@@ -57,160 +60,137 @@ class WPSBackend(IOBackend):
         if self.path.exists():
             logging.warning(f"Output file {self.path} exists and will be overwritten.")
             self.path.unlink()
-        
+
         self.path.touch()
 
-    def _write_header(
-        self,
-        file_handle,
-        hdate: str,
-        field: str,
-        units: str,
-        desc: str,
-        xlvl: float,
-        nx: int,
-        ny: int,
-    ):
-        """Writes the header as two separate Fortran records: version and main."""
-        # --- Write Record 1: File Format Version ---
-        version_marker = struct.pack(">i", 4) # Integer is 4 bytes
-        version_data = struct.pack(">i", 5)
-        file_handle.write(version_marker)
-        file_handle.write(version_data)
-        file_handle.write(version_marker)
-
-        # --- Write Record 2: Main Header Data ---
-        header_marker = struct.pack(">i", self.HEADER_SIZE)
-        
-        # Manually pad strings with spaces to match Fortran's behavior
-        hdate_padded = hdate.ljust(24)
-        map_source_padded = self.map_source.ljust(32)
-        field_padded = field.ljust(9)
-        units_padded = units.ljust(25)
-        desc_padded = desc.ljust(46)
-
-        header_data = struct.pack(
-            self.HEADER_FORMAT,
-            hdate_padded.encode("utf-8"),
-            0.0,  # Forecast hour (xfcst)
-            map_source_padded.encode("utf-8"),
-            field_padded.encode("utf-8"),
-            units_padded.encode("utf-8"),
-            desc_padded.encode("utf-8"),
-            xlvl,
-            nx,
-            ny,
-            0,    # iproj (0 for lat-lon grid)
-        )
-        
-        file_handle.write(header_marker)
-        file_handle.write(header_data)
-        file_handle.write(header_marker)
-
-    def _write_data(self, file_handle, field_data: np.ndarray):
-        """Writes the data payload record."""
-        data_bytes = field_data.astype(">f4").tobytes()
-        data_marker = struct.pack(">i", len(data_bytes))
-
-        file_handle.write(data_marker)
-        file_handle.write(data_bytes)
-        file_handle.write(data_marker)
-
-    def _write_wind_flag(self, file_handle):
-        """Writes the special is_wind_earth_relative flag for wind components."""
-        flag_marker = struct.pack(">i", 4) # Integer is 4 bytes
-        flag_data = struct.pack(">i", 1)
-        file_handle.write(flag_marker)
-        file_handle.write(flag_data)
-        file_handle.write(flag_marker)
-
+    def _write_record(self, file_handle: IO[bytes], data: bytes) -> None:
+        """Writes a Fortran-style record (marker, data, marker)."""
+        marker = struct.pack(">i", len(data))
+        file_handle.write(marker)
+        file_handle.write(data)
+        file_handle.write(marker)
 
     def write(
         self,
-        data_list: list,
-        coords: OrderedDict,
-        array_name: str | list[str], 
+        data_list: list[np.ndarray],
+        coords: OrderedDict[str, np.ndarray],
+        array_name: str | list[str],
     ) -> None:
-        """
-        Processes data and writes its contents to the binary file.
-        """
+        """Processes data and writes its contents to the binary file."""
         if isinstance(array_name, str):
             array_name = [array_name]
 
-        processed_data = []
-        for d in data_list:
-            if hasattr(d, 'cpu') and hasattr(d, 'numpy'):
-                processed_data.append(d.cpu().numpy())
-            else:
-                processed_data.append(d)
-
+        processed_data = [
+            d.cpu().numpy() if hasattr(d, "cpu") else d for d in data_list
+        ]
         data_vars = {
-            name: (list(coords.keys()), data) 
+            name: (list(coords.keys()), data)
             for name, data in zip(array_name, processed_data)
         }
-        ds_latlon = xr.Dataset(data_vars, coords=coords)
-        ds_latlon = ds_latlon.squeeze("lead_time")
-        
+        ds = xr.Dataset(data_vars, coords=coords).squeeze("lead_time")
+
         time_obj = pd.to_datetime(coords["time"][0])
         hdate = time_obj.strftime("%Y-%m-%d_%H:%M:%S")
 
         logging.info(f"Writing binary data for time {hdate} to {self.path}")
 
         with open(self.path, "ab") as f:
-            for var_name_e2s in ds_latlon.data_vars:
-                var_name_str = str(var_name_e2s)
+            for var_name_str in ds.data_vars:
                 base_var = None
-
-                if var_name_str in self.VARIABLE_MAP:
-                    base_var = var_name_str
+                if str(var_name_str) in self.VARIABLE_MAP:
+                    base_var = str(var_name_str)
                 else:
-                    match = re.match(r"([a-zA-Z]+)", var_name_str)
-                    if match:
-                        candidate = match.group(1)
-                        if candidate in self.VARIABLE_MAP:
-                            base_var = candidate
+                    match = re.match(r"([a-zA-Z]+)", str(var_name_str))
+                    if match and match.group(1) in self.VARIABLE_MAP:
+                        base_var = match.group(1)
 
-                if base_var is None:
-                    logging.warning(f"No WPS mapping for '{var_name_str}', skipping write.")
+                if not base_var:
+                    logging.warning(f"No WPS mapping for '{var_name_str}', skipping.")
                     continue
 
                 field_name, units, desc, xlvl_code = self.VARIABLE_MAP[base_var]
-                da_latlon = ds_latlon[var_name_e2s]
+                da = ds[var_name_str]
 
-                # Perform necessary unit conversions before writing
                 if base_var == "z":
-                    logging.info("Converting geopotential to geopotential height for GHT field.")
-                    # Use the magnitude of the metpy constant for the calculation
-                    da_latlon = da_latlon / g.magnitude
+                    da = da / g.magnitude
 
-                nx = da_latlon.sizes.get("lon", 1)
-                ny = da_latlon.sizes.get("lat", 1)
+                nx, ny = da.sizes.get("lon", 1), da.sizes.get("lat", 1)
 
-                if "level" in da_latlon.dims:
-                    for level in da_latlon["level"].values:
-                        da_level = da_latlon.sel(level=level)
-                        flat_data = da_level.values.flatten('F')
-                        
-                        self._write_header(
-                            f, hdate, field_name, units, desc, level * 100, nx, ny
+                if "level" in da.dims:
+                    for level in da["level"].values:
+                        self._write_complete_field(
+                            f,
+                            da.sel(level=level),
+                            hdate,
+                            field_name,
+                            units,
+                            desc,
+                            level * 100,
+                            nx,
+                            ny,
+                            coords,
                         )
-                        self._write_data(f, flat_data)
-                        
-                        if field_name in ["UU", "VV"]:
-                            self._write_wind_flag(f)
                 else:
-                    flat_data = da_latlon.values.flatten('F')
-                    # Use the specific level code from the map for 2D fields
-                    self._write_header(
-                        f, hdate, field_name, units, desc, xlvl_code, nx, ny
+                    self._write_complete_field(
+                        f, da, hdate, field_name, units, desc, xlvl_code, nx, ny, coords
                     )
-                    self._write_data(f, flat_data)
-                    
-                    if field_name in ["U10", "V10"]:
-                        self._write_wind_flag(f)
 
-    def close(self):
+    def _write_complete_field(
+        self,
+        f: IO[bytes],
+        da: xr.DataArray,
+        hdate: str,
+        field_name: str,
+        units: str,
+        desc: str,
+        xlvl: float,
+        nx: int,
+        ny: int,
+        coords: OrderedDict[str, np.ndarray],
+    ) -> None:
+        """Writes all five Fortran records for a single 2D field."""
+        # --- Record 1: Version ---
+        self._write_record(f, struct.pack(">i", 5))
+
+        # --- Record 2: Main Header ---
+        header_data = struct.pack(
+            self.HEADER_FORMAT,
+            hdate.ljust(24).encode("utf-8"),
+            0.0,  # Forecast hour
+            self.map_source.ljust(32).encode("utf-8"),
+            field_name.ljust(9).encode("utf-8"),
+            units.ljust(25).encode("utf-8"),
+            desc.ljust(46).encode("utf-8"),
+            xlvl,
+            nx,
+            ny,
+            0,  # iproj = 0
+        )
+        self._write_record(f, header_data)
+
+        # --- Record 3: Projection ---
+        lat = coords["lat"]
+        lon = coords["lon"]
+        proj_data = struct.pack(
+            self.PROJECTION_FORMAT_LATLON,
+            "SWCORNER".ljust(8).encode("utf-8"),
+            float(lat[0]),
+            float(lon[0]),
+            float(lat[1] - lat[0] if len(lat) > 1 else 0.0),
+            float(lon[1] - lon[0] if len(lon) > 1 else 0.0),
+            6371.229,  # Earth radius in km
+        )
+        self._write_record(f, proj_data)
+
+        # --- Record 4: Wind Flag ---
+        # is_wind_grid_rel = .FALSE. -> 0 for Earth-relative winds
+        self._write_record(f, struct.pack(">i", 0))
+
+        # --- Record 5: Data Payload ---
+        flat_data = da.values.flatten("F").astype(">f4")
+        self._write_record(f, flat_data.tobytes())
+
+    def close(self) -> None:
+        """Close the backend and perform any necessary cleanup."""
         logging.info("WPSBackend closed.")
         pass
-
-
