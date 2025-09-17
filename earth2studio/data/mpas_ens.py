@@ -7,15 +7,15 @@ import logging
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-from earth2studio.data import DataSource
-from earth2studio.data.utils import datasource_cache_root, xtime
-from earth2studio.lexicon.mpas import MPASLexicon
 from scipy.spatial import KDTree
+
+from earth2studio.data import DataSource
+from earth2studio.data.utils import datasource_cache_root
+from earth2studio.lexicon.mpas import MPASLexicon
 
 # =============================================================================
 # Logging Configuration
@@ -23,6 +23,7 @@ from scipy.spatial import KDTree
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
 
 # =============================================================================
 # Main Data Source Class
@@ -49,7 +50,7 @@ class MPAS(DataSource):
     d_lon: float = 0.25
     d_lat: float = 0.25
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """
         Post-initialization to prepare the target grid and compute or load the
         regridding indices from the cache.
@@ -69,7 +70,7 @@ class MPAS(DataSource):
             self.grid_ncells = grid_ds.sizes["nCells"]
 
     # Regridding and Data Loading Methods
-    def _prepare_regridding_indices(self) -> Tuple[np.ndarray, np.ndarray]:
+    def _prepare_regridding_indices(self) -> tuple[np.ndarray, np.ndarray]:
         """Calculates or loads cached nearest neighbor indices for regridding."""
         cached_file = (self.cache_path / self.grid_path.name).with_suffix(".npz")
         if cached_file.exists():
@@ -86,21 +87,31 @@ class MPAS(DataSource):
             def process_coords(coord_da: xr.DataArray) -> np.ndarray:
                 units = coord_da.attrs.get("units", "unknown").lower()
                 values = coord_da.values
-                
+
                 if units in ["rad", "radians"]:
-                    logging.info(f"{coord_da.name} units are in radians. Using values directly.")
+                    logging.info(
+                        f"{coord_da.name} units are in radians. Using values directly."
+                    )
                     return values
                 elif units in ["deg", "degrees"]:
-                    logging.info(f"{coord_da.name} units are in degrees. Converting to radians.")
+                    logging.info(
+                        f"{coord_da.name} units are in degrees. Converting to radians."
+                    )
                     return np.deg2rad(values)
-                else: # No units or unknown units
-                    logging.info(f"{coord_da.name} units are not specified. Inferring from value range.")
+                else:  # No units or unknown units
+                    logging.info(
+                        f"{coord_da.name} units are not specified. Inferring from value range."
+                    )
                     # Check if any values fall outside the typical radian range
                     if np.any(np.abs(values) > 2 * np.pi):
-                        logging.info(f"Values found outside [-2*pi, 2*pi]. Assuming degrees and converting.")
+                        logging.info(
+                            "Values found outside [-2*pi, 2*pi]. Assuming degrees and converting."
+                        )
                         return np.deg2rad(values)
                     else:
-                        logging.info(f"Values are within [-2*pi, 2*pi]. Assuming radians.")
+                        logging.info(
+                            "Values are within [-2*pi, 2*pi]. Assuming radians."
+                        )
                         return values
 
             mpas_lon_rad = process_coords(lon_cell)
@@ -133,8 +144,8 @@ class MPAS(DataSource):
         self,
         itime: datetime.datetime,
         fhr: int,
-        variables: Tuple[str],
-        members: Tuple[int],
+        variables: tuple[str],
+        members: tuple[int],
     ) -> xr.Dataset:
         """
         Loads data for a given initialization time, forecast hour, and member set,
@@ -155,13 +166,13 @@ class MPAS(DataSource):
                 f"No MPAS files found for itime={itime}, fhr={fhr}.\n"
                 f"Attempted paths:\n{attempted_paths_str}"
             )
-        
+
         # Determine the required source variables from the requested variables
         source_variables = self.lexicon.required_variables(list(variables))
         logging.info(f"Requesting source variables: {source_variables}")
 
         logging.info(f"Opening {len(existing_paths)} member files.")
-        
+
         def preprocess(ds: xr.Dataset) -> xr.Dataset:
             """
             Preprocessor to add metadata, derive variables, and then immediately
@@ -172,7 +183,7 @@ class MPAS(DataSource):
             match = re.search(r"mem_(\d+)", ds.encoding["source"])
             mem = int(match.group(1)) if match else -1
             ds = ds.expand_dims({"member": [mem]})
-            
+
             # First, reduce the dataset to only the raw variables needed for derivation.
             # This prevents derive_variables from working on the entire file.
             raw_vars_to_load = [v for v in source_variables if v in ds.data_vars]
@@ -182,7 +193,9 @@ class MPAS(DataSource):
             ds_derived = self.lexicon.derive_variables(ds_filtered)
 
             # Now, filter again to the final list of source variables (including derived ones)
-            final_vars_to_keep = [v for v in source_variables if v in ds_derived.data_vars]
+            final_vars_to_keep = [
+                v for v in source_variables if v in ds_derived.data_vars
+            ]
             return ds_derived[final_vars_to_keep]
 
         # Open the dataset lazily; the preprocess function will efficiently
@@ -221,7 +234,9 @@ class MPAS(DataSource):
 
         # Create new coordinates, preserving existing ones (time, member, etc.)
         new_coords = {
-            dim: coord for dim, coord in regridded_data.coords.items() if dim != "nCells"
+            dim: coord
+            for dim, coord in regridded_data.coords.items()
+            if dim != "nCells"
         }
         new_coords["lat"] = self.target_lat
         new_coords["lon"] = self.target_lon
@@ -239,10 +254,10 @@ class MPAS(DataSource):
     async def __call__(
         self,
         time: datetime.datetime,
-        variables: List[str],
+        variables: list[str],
         *,
         fhr: int = 0,
-        members: Optional[List[int]] = None,
+        members: list[int] | None = None,
     ) -> xr.DataArray:
         """
         The main entry point for fetching data. It loads, processes, regrids,
@@ -287,4 +302,3 @@ class MPAS(DataSource):
 
         # Convert to a single DataArray with a 'variable' dimension, as expected by e2s
         return ds_final.to_dataarray(dim="variable")
-

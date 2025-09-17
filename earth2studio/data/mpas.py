@@ -4,19 +4,19 @@
 import dataclasses
 import datetime
 import logging
-import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-from earth2studio.data import DataSource
-from earth2studio.data.utils import datasource_cache_root, xtime
-from earth2studio.lexicon.mpas import MPASHybridLexicon, MPASLexicon
 from scipy.spatial import KDTree
+
+from earth2studio.data import DataSource
+from earth2studio.data.utils import datasource_cache_root
+from earth2studio.lexicon.mpas import MPASHybridLexicon, MPASLexicon
+from earth2studio.utils.time import xtime
 
 # =============================================================================
 # Logging Configuration
@@ -24,6 +24,7 @@ from scipy.spatial import KDTree
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
 
 # =============================================================================
 # Base Class for MPAS Data Sources
@@ -49,13 +50,14 @@ class _MPASBase(DataSource):
     cache_path : Path, optional
         The directory to store cached regridding indices.
     """
+
     data_path: str
     grid_path: Path
     d_lon: float = 0.25
     d_lat: float = 0.25
     cache_path: Path = Path(datasource_cache_root()) / "mpas_base"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """
         Post-initialization to prepare the target grid and compute or load the
         regridding indices from the cache.
@@ -72,7 +74,7 @@ class _MPASBase(DataSource):
         with xr.open_dataset(self.grid_path) as grid_ds:
             self.grid_ncells = grid_ds.sizes["nCells"]
 
-    def _prepare_regridding_indices(self) -> Tuple[np.ndarray, np.ndarray]:
+    def _prepare_regridding_indices(self) -> tuple[np.ndarray, np.ndarray]:
         """Calculates or loads cached nearest neighbor indices for regridding."""
         cache_file_name = f"{self.grid_path.stem}_{self.d_lon}x{self.d_lat}.npz"
         cached_file = self.cache_path / cache_file_name
@@ -125,6 +127,7 @@ class _MPASBase(DataSource):
         z = np.sin(lat_rad)
         return np.array([x, y, z]).T
 
+
 # =============================================================================
 # Pressure-Level Data Source
 # =============================================================================
@@ -133,17 +136,18 @@ class MPAS(_MPASBase):
     """
     Custom data source for MPAS model output on pressure levels.
     """
+
     cache_path: Path = Path(datasource_cache_root()) / "mpas_plev"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.lexicon = MPASLexicon
         super().__post_init__()
 
     @lru_cache(maxsize=16)
     def _load_and_process(
         self,
-        time: Union[datetime.datetime, np.datetime64],
-        variables: Tuple[str],
+        time: datetime.datetime | np.datetime64,
+        variables: tuple[str],
     ) -> xr.Dataset:
         """
         Loads, derives variables, and regrids a single time slice of
@@ -175,7 +179,9 @@ class MPAS(_MPASBase):
             raw_vars_to_load = [v for v in source_variables if v in ds_slice.data_vars]
             ds_filtered = ds_slice[raw_vars_to_load]
             ds_derived = self.lexicon.derive_variables(ds_filtered)
-            final_vars_to_keep = [v for v in source_variables if v in ds_derived.data_vars]
+            final_vars_to_keep = [
+                v for v in source_variables if v in ds_derived.data_vars
+            ]
             ds_processed = ds_derived[final_vars_to_keep].load()
 
         logging.info("Regridding data...")
@@ -186,18 +192,23 @@ class MPAS(_MPASBase):
     def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
         """Remaps from the unstructured grid to a regular lat-lon grid."""
         regridded_data = ds_mpas.isel(nCells=self.indices)
-        
+
         new_shape = [
             size for dim, size in regridded_data.sizes.items() if dim != "nCells"
         ] + [len(self.target_lat), len(self.target_lon)]
 
         new_coords = {
-            dim: coord for dim, coord in regridded_data.coords.items() if dim != "nCells"
+            dim: coord
+            for dim, coord in regridded_data.coords.items()
+            if dim != "nCells"
         }
         new_coords["lat"] = self.target_lat
         new_coords["lon"] = self.target_lon
 
-        new_dims = [dim for dim in regridded_data.dims if dim != "nCells"] + ["lat", "lon"]
+        new_dims = [dim for dim in regridded_data.dims if dim != "nCells"] + [
+            "lat",
+            "lon",
+        ]
 
         regridded_vars = {}
         for var_name, da in regridded_data.data_vars.items():
@@ -208,7 +219,7 @@ class MPAS(_MPASBase):
         return xr.Dataset(regridded_vars, attrs=ds_mpas.attrs)
 
     def _finalize_dataset(
-        self, ds_regridded: xr.Dataset, variables: List[str]
+        self, ds_regridded: xr.Dataset, variables: list[str]
     ) -> xr.DataArray:
         """Builds the final DataArray from a processed, regridded Dataset."""
         rename_dict = {self.lexicon[var]: var for var in variables}
@@ -217,8 +228,8 @@ class MPAS(_MPASBase):
 
     def __call__(
         self,
-        time: Union[datetime.datetime, List[datetime.datetime], np.ndarray],
-        variables: List[str],
+        time: datetime.datetime | list[datetime.datetime] | np.ndarray,
+        variables: list[str],
     ) -> xr.DataArray:
         """
         Main entry point for fetching data. Handles both single datetime requests
@@ -244,6 +255,7 @@ class MPAS(_MPASBase):
                 return xr.DataArray()
             return xr.concat(results, dim="time")
 
+
 # =============================================================================
 # Hybrid-Level Data Source
 # =============================================================================
@@ -253,10 +265,11 @@ class MPASHybrid(_MPASBase):
     Custom data source for MPAS model output on native hybrid levels. Can also
     interpolate to pressure levels.
     """
-    pressure_levels: Union[List[int], Tuple[int, ...], None] = None
+
+    pressure_levels: list[int] | tuple[int, ...] | None = None
     cache_path: Path = Path(datasource_cache_root()) / "mpas_hybrid"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.lexicon = MPASHybridLexicon
         if isinstance(self.pressure_levels, list):
             self.pressure_levels = tuple(sorted(self.pressure_levels))
@@ -265,8 +278,8 @@ class MPASHybrid(_MPASBase):
     @lru_cache(maxsize=16)
     def _load_and_process(
         self,
-        time: Union[datetime.datetime, np.datetime64],
-        variables: Tuple[str],
+        time: datetime.datetime | np.datetime64,
+        variables: tuple[str],
     ) -> xr.Dataset:
         """
         Loads, processes (including vertical interpolation), and regrids data
@@ -285,7 +298,7 @@ class MPASHybrid(_MPASBase):
         with xtime(xr.open_dataset(path)) as ds_mpas:
             # Select exact time, will raise KeyError if not found.
             ds_slice = ds_mpas.sel(time=time)
-            
+
             if "time" in ds_slice.coords:
                 ds_slice = ds_slice.drop_vars("time")
             ds_slice = ds_slice.squeeze()
@@ -309,7 +322,9 @@ class MPASHybrid(_MPASBase):
         if self.pressure_levels is not None:
             is_3d_request = any(self.lexicon.is_3d_variable(v) for v in variables)
             if is_3d_request:
-                logging.info(f"3D variable requested. Performing vertical interpolation to {list(self.pressure_levels)} hPa.")
+                logging.info(
+                    f"3D variable requested. Performing vertical interpolation to {list(self.pressure_levels)} hPa."
+                )
                 pressure_levels_pa = [p * 100 for p in self.pressure_levels]
                 ds_processed = self._interpolate_to_pressure_levels(
                     ds_derived, pressure_levels_pa, variables
@@ -323,8 +338,8 @@ class MPASHybrid(_MPASBase):
     def _interpolate_to_pressure_levels(
         self,
         ds: xr.Dataset,
-        target_levels_pa: List[float],
-        requested_variables: Tuple[str],
+        target_levels_pa: list[int],
+        requested_variables: tuple[str],
     ) -> xr.Dataset:
         """
         Interpolates data from native hybrid levels to pressure levels, handling
@@ -370,7 +385,11 @@ class MPASHybrid(_MPASBase):
                 below_ground_mask = targets > surface_pressure
 
                 # Apply special extrapolation for temperature and geopotential
-                if var_name in ["temperature", "geopotential_at_surface", "geopotential"]:
+                if var_name in [
+                    "temperature",
+                    "geopotential_at_surface",
+                    "geopotential",
+                ]:
                     # Use last two valid points to define a slope in log-pressure space
                     if len(source_pres) > 1:
                         log_p2, log_p1 = np.log(source_pres[-2:])
@@ -386,9 +405,7 @@ class MPASHybrid(_MPASBase):
 
                 # For all other variables, and as a fallback for T/Z, persist surface value
                 # This fills any remaining NaNs below the ground.
-                final_below_ground_mask = (
-                    np.isnan(interp_results) & below_ground_mask
-                )
+                final_below_ground_mask = np.isnan(interp_results) & below_ground_mask
                 interp_results[final_below_ground_mask] = surface_value
 
                 output[i, :] = interp_results
@@ -428,9 +445,11 @@ class MPASHybrid(_MPASBase):
     def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
         """Remaps from the unstructured grid to a regular lat-lon grid."""
         regridded_data = ds_mpas.isel(nCells=self.indices)
-        
+
         base_coords = {
-            dim: coord for dim, coord in regridded_data.coords.items() if dim != "nCells"
+            dim: coord
+            for dim, coord in regridded_data.coords.items()
+            if dim != "nCells"
         }
         base_coords["lat"] = xr.DataArray(self.target_lat, dims=["lat"])
         base_coords["lon"] = xr.DataArray(self.target_lon, dims=["lon"])
@@ -439,16 +458,22 @@ class MPASHybrid(_MPASBase):
         for var_name, da in regridded_data.data_vars.items():
             other_dims = [dim for dim in da.dims if dim != "nCells"]
             new_dims = other_dims + ["lat", "lon"]
-            
+
             variable_coords = {
-                k: v for k, v in base_coords.items() if all(dim in new_dims for dim in v.dims)
+                k: v
+                for k, v in base_coords.items()
+                if all(dim in new_dims for dim in v.dims)
             }
-            
+
             # For 3D vars, regridded data is a flat array of vertical columns.
             # Reshape to (lat, lon, level) to match the grid structure,
             # then transpose to the final (level, lat, lon) dimension order.
             if "level" in new_dims:
-                temp_shape = (len(self.target_lat), len(self.target_lon), da.sizes["level"])
+                temp_shape = (
+                    len(self.target_lat),
+                    len(self.target_lon),
+                    da.sizes["level"],
+                )
                 reshaped_values = da.values.reshape(temp_shape).transpose((2, 0, 1))
                 new_dims = ["level", "lat", "lon"]
             else:
@@ -461,30 +486,34 @@ class MPASHybrid(_MPASBase):
         return xr.Dataset(regridded_vars, attrs=ds_mpas.attrs)
 
     def _finalize_dataset(
-        self, ds_regridded: xr.Dataset, variables: List[str]
+        self, ds_regridded: xr.Dataset, variables: list[str]
     ) -> xr.DataArray:
         """Builds the final DataArray from a processed, regridded Dataset."""
         vars_to_build = {}
         for var in variables:
             source_name = self.lexicon.get_derived_name(var)
             if source_name not in ds_regridded:
-                raise KeyError(f"Requested variable '{var}' (mapped to '{source_name}') could not be found or derived.")
-            
+                raise KeyError(
+                    f"Requested variable '{var}' (mapped to '{source_name}') could not be found or derived."
+                )
+
             da = ds_regridded[source_name]
             match = re.fullmatch(r"([a-zA-Z]+)([0-9]+)", var)
-            if match and 'level' in da.coords:
+            if match and "level" in da.coords:
                 level = int(match.group(2))
-                vars_to_build[var] = da.sel(level=level, method="nearest").drop_vars("level")
+                vars_to_build[var] = da.sel(level=level, method="nearest").drop_vars(
+                    "level"
+                )
             else:
                 vars_to_build[var] = da
-        
+
         ds_final = xr.Dataset(vars_to_build)
         return ds_final.to_dataarray(dim="variable")
 
     def __call__(
         self,
-        time: Union[datetime.datetime, List[datetime.datetime], np.ndarray],
-        variables: List[str],
+        time: datetime.datetime | list[datetime.datetime] | np.ndarray,
+        variables: list[str],
     ) -> xr.DataArray:
         """
         Main entry point for fetching data. Handles both single datetime requests
@@ -505,9 +534,7 @@ class MPASHybrid(_MPASBase):
                 # Add time coordinate back for this slice
                 da_slice = da_slice.assign_coords(time=t).expand_dims("time")
                 results.append(da_slice)
-            
+
             if not results:
                 return xr.DataArray()
             return xr.concat(results, dim="time")
-
-
