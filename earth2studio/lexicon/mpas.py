@@ -3,11 +3,10 @@
 # =============================================================================
 import logging
 import re
-from typing import List
 
+import metpy.xarray  # noqa: F401 (activates .metpy accessor)
 import numpy as np
 import xarray as xr
-from .base import LexiconType
 from metpy.calc import mixing_ratio_from_relative_humidity
 from metpy.constants import (
     dry_air_gas_constant,
@@ -16,7 +15,9 @@ from metpy.constants import (
     pot_temp_ref_press,
 )
 from metpy.units import units
-import metpy.xarray  # Activates .metpy accessor
+
+from earth2studio.lexicon.base import LexiconType
+
 
 # =============================================================================
 # MPAS Lexicon Class
@@ -45,8 +46,20 @@ class MPASLexicon(metaclass=LexiconType):
 
     # Define the native pressure levels for which source data exists.
     # Used for building variable names.
-    PRESSURE_LEVELS: List[int] = [
-        1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50
+    PRESSURE_LEVELS: list[int] = [
+        1000,
+        925,
+        850,
+        700,
+        600,
+        500,
+        400,
+        300,
+        250,
+        200,
+        150,
+        100,
+        50,
     ]
 
     # --- Direct Mappings for Surface Variables ---
@@ -79,11 +92,10 @@ class MPASLexicon(metaclass=LexiconType):
                 return f"uzonal_{target_level}hPa"
             elif var_type == "v":
                 return f"umeridional_{target_level}hPa"
-            elif var_type in ["q", "r"]: # Support for humidity types
+            elif var_type in ["q", "r"]:  # Support for humidity types
                 return f"mixing_ratio_{target_level}hPa"
 
         raise KeyError(f"Lexicon key '{key}' not found in MPAS lexicon.")
-
 
     @staticmethod
     def _remap_pressure(pl: int) -> int:
@@ -97,7 +109,7 @@ class MPASLexicon(metaclass=LexiconType):
         return MPASLexicon._PRESSURE_MAP.get(pl, pl)
 
     @classmethod
-    def required_variables(cls, variables: List[str]) -> List[str]:
+    def required_variables(cls, variables: list[str]) -> list[str]:
         """
         Determines the full set of source variables required to compute the
         requested e2s variables, including those needed for derivations.
@@ -112,11 +124,11 @@ class MPASLexicon(metaclass=LexiconType):
                 level = int(match.group(2))
                 target_level = cls._remap_pressure(level)
 
-                if var_type == "z": # Geopotential
+                if var_type == "z":  # Geopotential
                     # If geopotential is not in the file, we need height to derive it.
                     required.add(f"geopotential_{target_level}hPa")
                     required.add(f"height_{target_level}hPa")
-                elif var_type in ["q", "r"]: # Mixing Ratio
+                elif var_type in ["q", "r"]:  # Mixing Ratio
                     # We need RH and temperature to compute mixing ratio.
                     required.add(f"mixing_ratio_{target_level}hPa")
                     required.add(f"relhum_{target_level}hPa")
@@ -124,14 +136,16 @@ class MPASLexicon(metaclass=LexiconType):
                 else:
                     # For other pressure level variables (t, u, v), get the direct mapping
                     try:
-                        required.add(cls[var])
+                        required.add(cls.get_item(var))
                     except KeyError:
-                        logging.warning(f"No mapping for '{var}' found. Adding directly.")
+                        logging.warning(
+                            f"No mapping for '{var}' found. Adding directly."
+                        )
                         required.add(var)
             else:
                 # Handle surface variables by looking them up in the lexicon
                 try:
-                    required.add(cls[var])
+                    required.add(cls.get_item(var))
                 except KeyError:
                     logging.warning(f"No mapping for '{var}' found. Adding directly.")
                     required.add(var)
@@ -146,7 +160,9 @@ class MPASLexicon(metaclass=LexiconType):
         the `preprocess` function in `xr.open_mfdataset`.
         """
         # --- Derive Geopotential from Height ---
-        height_vars = [v for v in ds.data_vars if v.startswith(MPASLexicon._HEIGHT_PREFIX)]
+        height_vars = [
+            v for v in ds.data_vars if v.startswith(MPASLexicon._HEIGHT_PREFIX)
+        ]
         for h_var in height_vars:
             g_var = h_var.replace(MPASLexicon._HEIGHT_PREFIX, MPASLexicon._GPH_PREFIX)
             if g_var not in ds:
@@ -156,12 +172,14 @@ class MPASLexicon(metaclass=LexiconType):
         # --- Derive Mixing Ratio from Relative Humidity ---
         rh_vars = [v for v in ds.data_vars if v.startswith(MPASLexicon._RELHUM_PREFIX)]
         for rh_var in rh_vars:
-            q_var = rh_var.replace(MPASLexicon._RELHUM_PREFIX, MPASLexicon._MIX_RATIO_PREFIX)
+            q_var = rh_var.replace(
+                MPASLexicon._RELHUM_PREFIX, MPASLexicon._MIX_RATIO_PREFIX
+            )
             t_var = rh_var.replace(MPASLexicon._RELHUM_PREFIX, MPASLexicon._TEMP_PREFIX)
             if q_var not in ds and t_var in ds:
                 logging.info(f"Deriving '{q_var}' from '{rh_var}' and '{t_var}'.")
                 pressure_hpa = float(rh_var.split("_")[-1][:-3]) * units.hPa
-                temperature_k = ds[t_var] * units.kelvin # Add units for metpy
+                temperature_k = ds[t_var] * units.kelvin  # Add units for metpy
                 relative_humidity = ds[rh_var]
 
                 mixing_ratio = mixing_ratio_from_relative_humidity(
@@ -211,7 +229,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
         raise KeyError(f"Lexicon key '{key}' not found in MPASHybridLexicon.")
 
     @classmethod
-    def required_variables(cls, variables: List[str]) -> List[str]:
+    def required_variables(cls, variables: list[str]) -> list[str]:
         """
         Determines the full set of source variables required to compute the
         requested e2s variables, including dependencies for derivations. This logic
@@ -228,7 +246,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
                     required.update(["rainc", "rainnc"])
                 else:  # Standard 2D vars: lsm, msl, t2m, u10m, v10m
                     try:
-                        required.add(cls[var])
+                        required.add(cls.get_item(var))
                     except KeyError:
                         logging.warning(f"No mapping for '{var}'. Adding directly.")
                         required.add(var)
@@ -241,7 +259,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
             required.update(["pressure_p", "pressure_base"])
 
             # Add the source variable for the requested field (e.g., 'theta' for 't')
-            required.add(cls[base_var])
+            required.add(cls.get_item(base_var))
 
             # Add any extra dependencies for specific 3D variable derivations
             if base_var == "w":
@@ -259,7 +277,14 @@ class MPASHybridLexicon(metaclass=LexiconType):
         """
         # Explicitly define all known 2D variables.
         # This prevents 't2m' from being misinterpreted as 3D variable 't'.
-        if variable_name in ["lsm", "msl", "t2m", "u10m", "v10m", "z"] or variable_name.startswith("tp"):
+        if variable_name in [
+            "lsm",
+            "msl",
+            "t2m",
+            "u10m",
+            "v10m",
+            "z",
+        ] or variable_name.startswith("tp"):
             return False
 
         # If it's not a known 2D variable and ends with digits, it's a 3D field.
@@ -282,7 +307,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
         elif base_var == "tp":
             return variable_name  # Return the full name, e.g., 'tp06'
         else:
-            return cls[variable_name]
+            return cls.get_item(variable_name)
 
     @staticmethod
     def derive_variables(ds: xr.Dataset) -> xr.Dataset:
@@ -334,13 +359,13 @@ class MPASHybridLexicon(metaclass=LexiconType):
             # from a template array.
             height_coords = {
                 "nCells": ds["pressure"].coords["nCells"],
-                "nVertLevels": ds["pressure"].coords["nVertLevels"]
+                "nVertLevels": ds["pressure"].coords["nVertLevels"],
             }
             height_da = xr.DataArray(
                 z_mid_level_vals,
                 dims=("nCells", "nVertLevels"),
                 coords=height_coords,
-                attrs={"units": "m", "long_name": "Geometric height at layer center"}
+                attrs={"units": "m", "long_name": "Geometric height at layer center"},
             )
             ds["height"] = height_da
 
@@ -355,7 +380,12 @@ class MPASHybridLexicon(metaclass=LexiconType):
         # vertical velocity levels (staggered grid). This is the standard method
         # used in MPAS post-processing to maintain consistency with the model's
         # vertical coordinate system.
-        if "w" in ds and "zgrid" in ds and "pressure" in ds and "pressure_on_w" not in ds:
+        if (
+            "w" in ds
+            and "zgrid" in ds
+            and "pressure" in ds
+            and "pressure_on_w" not in ds
+        ):
             logging.info("Deriving pressure on the staggered vertical grid for 'w'.")
 
             pressure = ds["pressure"]
@@ -372,7 +402,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
             z_kp1 = zgrid.isel(nVertLevelsP1=slice(2, nVertLevels + 1))
 
             p_k = pressure.isel(nVertLevels=slice(1, nVertLevels))
-            p_km1 = pressure.isel(nVertLevels=slice(0, nVertLevels-1))
+            p_km1 = pressure.isel(nVertLevels=slice(0, nVertLevels - 1))
 
             w1 = (z_k.values - z_km1.values) / (z_kp1.values - z_km1.values)
             w2 = (z_kp1.values - z_k.values) / (z_kp1.values - z_km1.values)
@@ -387,7 +417,9 @@ class MPASHybridLexicon(metaclass=LexiconType):
             z2 = 0.5 * (zgrid.isel(nVertLevelsP1=1) + zgrid.isel(nVertLevelsP1=2))
             w1_bot = (z0 - z2) / (z1 - z2)
             w2_bot = 1.0 - w1_bot
-            log_p_bot = w1_bot * np.log(pressure.isel(nVertLevels=0)) + w2_bot * np.log(pressure.isel(nVertLevels=1))
+            log_p_bot = w1_bot * np.log(pressure.isel(nVertLevels=0)) + w2_bot * np.log(
+                pressure.isel(nVertLevels=1)
+            )
             pressure_on_w.values[:, 0] = np.exp(log_p_bot)
 
             # Extrapolation for the top level
@@ -397,7 +429,9 @@ class MPASHybridLexicon(metaclass=LexiconType):
             z2 = 0.5 * (zgrid.isel(nVertLevelsP1=-2) + zgrid.isel(nVertLevelsP1=-3))
             w1_top = (z0 - z2) / (z1 - z2)
             w2_top = 1.0 - w1_top
-            log_p_top = w1_top * np.log(pressure.isel(nVertLevels=-1)) + w2_top * np.log(pressure.isel(nVertLevels=-2))
+            log_p_top = w1_top * np.log(
+                pressure.isel(nVertLevels=-1)
+            ) + w2_top * np.log(pressure.isel(nVertLevels=-2))
             pressure_on_w.values[:, -1] = np.exp(log_p_top)
 
             ds["pressure_on_w"] = pressure_on_w
@@ -413,9 +447,9 @@ class MPASHybridLexicon(metaclass=LexiconType):
             # Preserve metadata and add a descriptive name
             total_precip.attrs = ds["rainc"].attrs.copy()
             total_precip.attrs["long_name"] = "Total precipitation"
-            total_precip.attrs[
-                "description"
-            ] = "Sum of convective (rainc) and non-convective (rainnc) precipitation."
+            total_precip.attrs["description"] = (
+                "Sum of convective (rainc) and non-convective (rainnc) precipitation."
+            )
             ds["tp06"] = total_precip
 
         # --- 6. Derive Surface Geopotential from Terrain Height ---
@@ -429,5 +463,3 @@ class MPASHybridLexicon(metaclass=LexiconType):
             }
 
         return ds
-
-

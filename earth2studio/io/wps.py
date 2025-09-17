@@ -28,17 +28,19 @@ class WPSBackend(IOBackend):
 
     VARIABLE_MAP = {
         # Maps e2s name to (WPS Field Name, Units, Description, WPS Level Code)
+        # For 3D vars, -1 indicates the level is encoded in the variable name.
         "t": ("TT", "K", "Temperature", -1),
         "z": ("GHT", "m", "Geopotential Height", -1),
         "u": ("UU", "m s-1", "Zonal Wind", -1),
         "v": ("VV", "m s-1", "Meridional Wind", -1),
         "q": ("SPECHUMD", "kg kg-1", "Specific Humidity", -1),
         "r": ("RH", "%", "Relative Humidity", -1),
-        "msl": ("PMSL", "Pa", "Sea Level Pressure", 200100.0),
+        # For 2D vars, the level code is a fixed value.
+        "msl": ("PMSL", "Pa", "Sea Level Pressure", 201300.0),
         "lsm": ("LANDSEA", "proportion", "Land/Sea Mask", 200100.0),
-        "t2m": ("T2", "K", "2-meter Temperature", 2.0),
-        "u10m": ("U10", "m s-1", "10-meter U-wind", 10.0),
-        "v10m": ("V10", "m s-1", "10-meter V-wind", 10.0),
+        "t2m": ("T2", "K", "2-meter Temperature", 200100.0),
+        "u10m": ("U10", "m s-1", "10-meter U-wind", 200100.0),
+        "v10m": ("V10", "m s-1", "10-meter V-wind", 200100.0),
     }
 
     # Format strings based on the reference Fortran source.
@@ -89,10 +91,24 @@ class WPSBackend(IOBackend):
         }
         ds = xr.Dataset(data_vars, coords=coords).squeeze("lead_time")
 
-        time_obj = pd.to_datetime(coords["time"][0])
-        hdate = time_obj.strftime("%Y-%m-%d_%H:%M:%S")
+        valid_time = pd.to_datetime(coords["time"][0])
+        hdate = valid_time.strftime("%Y-%m-%d_%H:%M:%S")
 
-        logging.info(f"Writing binary data for time {hdate} to {self.path}")
+        # Calculate forecast hour from lead_time coordinate
+        xfcst: float
+        if "lead_time" in coords:
+            lead_time_delta = coords["lead_time"][0]
+            # Convert numpy timedelta64 to floating point hours
+            xfcst = lead_time_delta / np.timedelta64(1, "h")
+        else:
+            logging.warning(
+                "'lead_time' not in coordinates, defaulting forecast hour to 0.0."
+            )
+            xfcst = 0.0
+
+        logging.info(
+            f"Writing binary data for time {hdate} (F{xfcst:03.0f}) to {self.path}"
+        )
 
         with open(self.path, "ab") as f:
             for var_name_str in ds.data_vars:
@@ -116,24 +132,39 @@ class WPSBackend(IOBackend):
 
                 nx, ny = da.sizes.get("lon", 1), da.sizes.get("lat", 1)
 
-                if "level" in da.dims:
-                    for level in da["level"].values:
-                        self._write_complete_field(
-                            f,
-                            da.sel(level=level),
-                            hdate,
-                            field_name,
-                            units,
-                            desc,
-                            level * 100,
-                            nx,
-                            ny,
-                            coords,
+                # Determine the vertical level for the header
+                final_xlvl: float
+                if str(var_name_str) == "z":
+                    # Special case for surface geopotential height
+                    final_xlvl = 200100.0
+                elif xlvl_code == -1:
+                    # 3D var: parse level from name (e.g., z500 -> 500 hPa)
+                    level_match = re.search(r"(\d+)$", str(var_name_str))
+                    if level_match:
+                        level_hpa = float(level_match.group(1))
+                        final_xlvl = level_hpa * 100.0  # Convert hPa to Pa
+                    else:
+                        logging.warning(
+                            f"Could not parse pressure level from '{var_name_str}'. Skipping."
                         )
+                        continue
                 else:
-                    self._write_complete_field(
-                        f, da, hdate, field_name, units, desc, xlvl_code, nx, ny, coords
-                    )
+                    # Other 2D var: use the fixed code from the map
+                    final_xlvl = xlvl_code
+
+                self._write_complete_field(
+                    f,
+                    da,
+                    hdate,
+                    field_name,
+                    units,
+                    desc,
+                    final_xlvl,
+                    nx,
+                    ny,
+                    coords,
+                    xfcst,
+                )
 
     def _write_complete_field(
         self,
@@ -147,6 +178,7 @@ class WPSBackend(IOBackend):
         nx: int,
         ny: int,
         coords: OrderedDict[str, np.ndarray],
+        xfcst: float,
     ) -> None:
         """Writes all five Fortran records for a single 2D field."""
         # --- Record 1: Version ---
@@ -156,7 +188,7 @@ class WPSBackend(IOBackend):
         header_data = struct.pack(
             self.HEADER_FORMAT,
             hdate.ljust(24).encode("utf-8"),
-            0.0,  # Forecast hour
+            xfcst,
             self.map_source.ljust(32).encode("utf-8"),
             field_name.ljust(9).encode("utf-8"),
             units.ljust(25).encode("utf-8"),
@@ -178,7 +210,7 @@ class WPSBackend(IOBackend):
             float(lon[0]),
             float(lat[1] - lat[0] if len(lat) > 1 else 0.0),
             float(lon[1] - lon[0] if len(lon) > 1 else 0.0),
-            6371.229,  # Earth radius in km
+            6371229.0,  # Earth radius in m (ERA5)
         )
         self._write_record(f, proj_data)
 
