@@ -11,12 +11,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
+from metpy.constants import dry_air_gas_constant, g
 from scipy.spatial import KDTree
 
 from earth2studio.data import DataSource
 from earth2studio.data.utils import datasource_cache_root
 from earth2studio.lexicon.mpas import MPASHybridLexicon, MPASLexicon
 from earth2studio.utils.time import xtime
+
+# =============================================================================
+# Constants
+# =============================================================================
+# Standard lapse rate in K/m for temperature extrapolation below ground.
+STANDARD_LAPSE_RATE = 0.0065
 
 # =============================================================================
 # Logging Configuration
@@ -67,8 +74,13 @@ class _MPASBase(DataSource):
         if isinstance(self.data_path, list):
             self.data_path = tuple(self.data_path)
 
-        self.target_lon = np.arange(0, 360, self.d_lon)
-        self.target_lat = np.arange(90, -90 - self.d_lat, -self.d_lat)
+        # Use np.linspace for robust grid generation that avoids floating point
+        # precision issues and guarantees endpoint inclusion.
+        n_lon = int(360 / self.d_lon)
+        n_lat = int(180 / self.d_lat) + 1
+        self.target_lon = np.linspace(0, 360, n_lon, endpoint=False)
+        self.target_lat = np.linspace(90, -90, n_lat)
+
         self.distance, self.indices = self._prepare_regridding_indices()
 
         with xr.open_dataset(self.grid_path) as grid_ds:
@@ -222,7 +234,7 @@ class MPAS(_MPASBase):
         self, ds_regridded: xr.Dataset, variables: list[str]
     ) -> xr.DataArray:
         """Builds the final DataArray from a processed, regridded Dataset."""
-        rename_dict = {self.lexicon[var]: var for var in variables}
+        rename_dict = {self.lexicon.get_item(var): var for var in variables}
         ds_final = ds_regridded[list(rename_dict.keys())].rename(rename_dict)
         return ds_final.to_dataarray(dim="variable")
 
@@ -358,6 +370,7 @@ class MPASHybrid(_MPASBase):
             var_name: str,
         ) -> np.ndarray:
             """
+
             Performs interpolation and fills/extrapolates below-ground NaNs
             for a single variable field across all horizontal cells.
             """
@@ -385,11 +398,19 @@ class MPASHybrid(_MPASBase):
                 below_ground_mask = targets > surface_pressure
 
                 # Apply special extrapolation for temperature and geopotential
-                if var_name in [
-                    "temperature",
-                    "geopotential_at_surface",
-                    "geopotential",
-                ]:
+                if var_name == "temperature":
+                    # Extrapolate T downwards using a standard lapse rate.
+                    # T(p) = T_sfc * (p / p_sfc) ^ (R_d * L / g)
+                    t_sfc = surface_value
+                    p_sfc = surface_pressure
+                    exponent = (
+                        dry_air_gas_constant.magnitude * STANDARD_LAPSE_RATE
+                    ) / g.magnitude
+                    p_target = targets[below_ground_mask]
+                    extrap_values = t_sfc * (p_target / p_sfc) ** exponent
+                    interp_results[below_ground_mask] = extrap_values
+
+                elif var_name in ["geopotential_at_surface", "geopotential"]:
                     # Use last two valid points to define a slope in log-pressure space
                     if len(source_pres) > 1:
                         log_p2, log_p1 = np.log(source_pres[-2:])
@@ -403,8 +424,7 @@ class MPASHybrid(_MPASBase):
                             )
                             interp_results[below_ground_mask] = extrap_values
 
-                # For all other variables, and as a fallback for T/Z, persist surface value
-                # This fills any remaining NaNs below the ground.
+                # For all other variables, and as a fallback, persist surface value
                 final_below_ground_mask = np.isnan(interp_results) & below_ground_mask
                 interp_results[final_below_ground_mask] = surface_value
 
@@ -417,11 +437,10 @@ class MPASHybrid(_MPASBase):
             is_staggered = "nVertLevelsP1" in da.dims
             if (is_main or is_staggered) and name in vars_to_interp:
                 logging.info(f"Interpolating variable: {name}")
-                vert_dim = "nVertLevels" if is_main else "nVertLevelsP1"
                 pressure_field = ds["pressure"] if is_main else ds["pressure_on_w"]
 
-                data_np = da.transpose("nCells", vert_dim).values
-                pressure_np = pressure_field.transpose("nCells", vert_dim).values
+                data_np = da.values
+                pressure_np = pressure_field.values
 
                 interp_data = interp_and_fill_field(
                     data_np, pressure_np, np.array(target_levels_pa), name
@@ -465,9 +484,6 @@ class MPASHybrid(_MPASBase):
                 if all(dim in new_dims for dim in v.dims)
             }
 
-            # For 3D vars, regridded data is a flat array of vertical columns.
-            # Reshape to (lat, lon, level) to match the grid structure,
-            # then transpose to the final (level, lat, lon) dimension order.
             if "level" in new_dims:
                 temp_shape = (
                     len(self.target_lat),

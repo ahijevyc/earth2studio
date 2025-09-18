@@ -1,6 +1,6 @@
-# =============================================================================
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 # Imports
-# =============================================================================
+# -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 import logging
 import re
 
@@ -18,10 +18,16 @@ from metpy.units import units
 
 from earth2studio.lexicon.base import LexiconType
 
+# =============================================================================
+# Constants
+# =============================================================================
+# Standard lapse rate in K/m for temperature extrapolation below ground.
+STANDARD_LAPSE_RATE = 0.0065
 
-# =============================================================================
+
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 # MPAS Lexicon Class
-# =============================================================================
+# -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 class MPASLexicon(metaclass=LexiconType):
     """
     Defines the lexicon for custom MPAS data. This class translates standard
@@ -68,7 +74,7 @@ class MPASLexicon(metaclass=LexiconType):
         "t2m": "t2m",
         "u10m": "u10",
         "v10m": "v10",
-        "msl": "surface_pressure",  # Assuming msl is surface pressure
+        "msl": "mslp",  # Mean sea level pressure
     }
 
     @classmethod
@@ -179,14 +185,15 @@ class MPASLexicon(metaclass=LexiconType):
             if q_var not in ds and t_var in ds:
                 logging.info(f"Deriving '{q_var}' from '{rh_var}' and '{t_var}'.")
                 pressure_hpa = float(rh_var.split("_")[-1][:-3]) * units.hPa
-                temperature_k = ds[t_var] * units.kelvin  # Add units for metpy
+                temperature_k = ds[t_var] * units.kelvin
                 relative_humidity = ds[rh_var]
 
+                # Perform unit-aware calculation
                 mixing_ratio = mixing_ratio_from_relative_humidity(
                     pressure_hpa, temperature_k, relative_humidity
                 )
-                # Dequantify to get a plain numpy array for xarray
-                ds[q_var] = mixing_ratio.metpy.dequantify()
+                # Keep the result as a unit-aware DataArray
+                ds[q_var] = mixing_ratio
 
         return ds
 
@@ -201,7 +208,6 @@ class MPASHybridLexicon(metaclass=LexiconType):
     """
 
     # Maps general e2s variable identifiers to their native MPAS counterparts.
-    # This is the single source of truth for variable names.
     _lexicon = {
         "t": "theta",  # Temperature is derived from Potential Temperature
         "z": "zgrid",  # Geopotential is derived from geometric height
@@ -209,8 +215,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
         "u": "uReconstructZonal",
         "v": "uReconstructMeridional",
         "w": "w",
-        "msl": "surface_pressure",  # Mean sea level pressure (or surface pressure)
-        "lsm": "landmask",  # Land-sea mask
+        "lsm": "landmask",
         "t2m": "t2m",
         "u10m": "u10",
         "v10m": "v10",
@@ -220,8 +225,6 @@ class MPASHybridLexicon(metaclass=LexiconType):
     @classmethod
     def get_item(cls, key: str) -> str:
         """Provides a direct lookup, stripping pressure levels for hybrid data."""
-        # For a variable like 't850', we still need the base variable 'theta'
-        # from the source file. The DataSource handles the interpolation.
         base_var = re.sub(r"\d+$", "", key)
         if base_var in cls._lexicon:
             return cls._lexicon[base_var]
@@ -232,9 +235,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
     def required_variables(cls, variables: list[str]) -> list[str]:
         """
         Determines the full set of source variables required to compute the
-        requested e2s variables, including dependencies for derivations. This logic
-        is simplified based on the rule that all 3D variables must have a
-        pressure level suffix (e.g., 't500').
+        requested e2s variables, including dependencies for derivations.
         """
         required = set()
         for var in variables:
@@ -242,29 +243,27 @@ class MPASHybridLexicon(metaclass=LexiconType):
             if not cls.is_3d_variable(var):
                 if var == "z":  # surface geopotential
                     required.add("ter")
+                elif var == "msl":  # mean sea level pressure
+                    required.update(["surface_pressure", "ter", "t2m"])
                 elif var.startswith("tp"):
                     required.update(["rainc", "rainnc"])
-                else:  # Standard 2D vars: lsm, msl, t2m, u10m, v10m
+                else:  # Standard 2D vars: lsm, t2m, u10m, v10m
                     try:
                         required.add(cls.get_item(var))
                     except KeyError:
                         logging.warning(f"No mapping for '{var}'. Adding directly.")
                         required.add(var)
-                continue  # Done with this 2D variable
+                continue
 
-            # --- Everything below this point is a 3D variable (e.g., t500) ---
+            # --- Everything below this point is a 3D variable ---
             base_var = re.sub(r"\d+$", "", var)
-
-            # All 3D variables need pressure for vertical interpolation
             required.update(["pressure_p", "pressure_base"])
-
-            # Add the source variable for the requested field (e.g., 'theta' for 't')
             required.add(cls.get_item(base_var))
 
-            # Add any extra dependencies for specific 3D variable derivations
             if base_var == "w":
-                # 'w' also needs 'zgrid' to derive pressure on the staggered grid
                 required.add("zgrid")
+                required.add("theta")
+                required.add("qv")
 
         return list(required)
 
@@ -272,11 +271,8 @@ class MPASHybridLexicon(metaclass=LexiconType):
     def is_3d_variable(cls, variable_name: str) -> bool:
         """
         Checks if a variable is a 3D field. A variable is considered 3D if it's
-        not in a specific list of 2D variables and ends with a number (the
-        pressure level).
+        not in a specific list of 2D variables and ends with a number.
         """
-        # Explicitly define all known 2D variables.
-        # This prevents 't2m' from being misinterpreted as 3D variable 't'.
         if variable_name in [
             "lsm",
             "msl",
@@ -286,26 +282,26 @@ class MPASHybridLexicon(metaclass=LexiconType):
             "z",
         ] or variable_name.startswith("tp"):
             return False
-
-        # If it's not a known 2D variable and ends with digits, it's a 3D field.
         return bool(re.search(r"\d+$", variable_name))
 
     @classmethod
     def get_derived_name(cls, variable_name: str) -> str:
         """
         Gets the name of a variable after lexicon derivations have been applied.
-        e.g., 't' or 't500' becomes 'temperature'.
-        e.g., 'z' or 'z500' becomes 'geopotential'.
         """
         base_var = re.sub(r"\d+$", "", variable_name)
         if variable_name == "z":
             return "geopotential_at_surface"
+        elif variable_name == "msl":
+            return "mean_sea_level_pressure"
         elif base_var == "t":
             return "temperature"
         elif base_var == "z":
             return "geopotential"
+        elif base_var == "w":
+            return "pressure_vertical_velocity"
         elif base_var == "tp":
-            return variable_name  # Return the full name, e.g., 'tp06'
+            return variable_name
         else:
             return cls.get_item(variable_name)
 
@@ -313,50 +309,25 @@ class MPASHybridLexicon(metaclass=LexiconType):
     def derive_variables(ds: xr.Dataset) -> xr.Dataset:
         """
         Derives standard meteorological variables from the raw MPAS output.
-        - Calculates full pressure from base and perturbation pressure.
-        - Calculates temperature from potential temperature (theta).
-        - Calculates geopotential from geometric height (zgrid).
-        - Calculates pressure on the staggered 'w' grid.
-        - Calculates total precipitation from its components.
         """
-        # --- 1. Derive Full Pressure (if needed) ---
+        # --- 1. Derive Full Pressure ---
         if "pressure_base" in ds and "pressure_p" in ds and "pressure" not in ds:
-            logging.info("Deriving full pressure.")
             ds["pressure"] = ds["pressure_base"] + ds["pressure_p"]
-            ds["pressure"].attrs = {
-                "units": "Pa",
-                "long_name": "Full atmospheric pressure",
-            }
+            ds["pressure"].attrs["units"] = "Pa"
 
-        # --- 2. Derive Temperature from Potential Temperature (if needed) ---
+        # --- 2. Derive Temperature from Potential Temperature ---
         if "theta" in ds and "pressure" in ds and "temperature" not in ds:
-            logging.info(
-                "Deriving temperature from potential temperature using unit-aware calculations."
-            )
-            # Quantify only the specific arrays needed for the calculation
             pressure_q = ds["pressure"].metpy.quantify()
             theta_q = ds["theta"].metpy.quantify()
-
-            # Ensure reference pressure has the same units as the data
             ref_press_pa = pot_temp_ref_press.to(pressure_q.metpy.units)
-
             kappa = dry_air_gas_constant / dry_air_spec_heat_press
             exner = (pressure_q / ref_press_pa) ** kappa
-            temperature_with_units = theta_q * exner
-            ds["temperature"] = temperature_with_units.metpy.dequantify()
-            ds["temperature"].attrs["long_name"] = "Temperature"
+            ds["temperature"] = theta_q * exner
 
-        # --- 3. Derive Geopotential from Geometric Height (zgrid) (if needed) ---
+        # --- 3. Derive Geopotential from Geometric Height ---
         if "zgrid" in ds and "pressure" in ds and "geopotential" not in ds:
-            logging.info("Deriving geopotential from geometric height (zgrid).")
-
-            # zgrid is on layer interfaces (nVertLevelsP1), but pressure/temp are on
-            # layer centers (nVertLevels). We average zgrid to the centers.
             zgrid_vals = ds["zgrid"].values
             z_mid_level_vals = 0.5 * (zgrid_vals[..., :-1] + zgrid_vals[..., 1:])
-
-            # Build coordinates explicitly to avoid carrying over unwanted ones
-            # from a template array.
             height_coords = {
                 "nCells": ds["pressure"].coords["nCells"],
                 "nVertLevels": ds["pressure"].coords["nVertLevels"],
@@ -365,101 +336,110 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 z_mid_level_vals,
                 dims=("nCells", "nVertLevels"),
                 coords=height_coords,
-                attrs={"units": "m", "long_name": "Geometric height at layer center"},
             )
             ds["height"] = height_da
+            ds["geopotential"] = ds["height"] * g
 
-            # Quantify only the height array to calculate geopotential
-            height_q = ds["height"].metpy.quantify()
-            geopotential_with_units = height_q * g
-            ds["geopotential"] = geopotential_with_units.metpy.dequantify()
-            ds["geopotential"].attrs["long_name"] = "Geopotential"
-
-        # --- 4. Derive Pressure on the staggered 'w' grid (if needed) ---
-        # This routine uses log-linear interpolation to place pressure values onto the
-        # vertical velocity levels (staggered grid). This is the standard method
-        # used in MPAS post-processing to maintain consistency with the model's
-        # vertical coordinate system.
+        # --- 4. Derive Pressure on the staggered 'w' grid ---
         if (
             "w" in ds
             and "zgrid" in ds
             and "pressure" in ds
             and "pressure_on_w" not in ds
         ):
-            logging.info("Deriving pressure on the staggered vertical grid for 'w'.")
-
-            pressure = ds["pressure"]
-            zgrid = ds["zgrid"]
+            pressure, zgrid = ds["pressure"], ds["zgrid"]
             nVertLevels = ds.sizes["nVertLevels"]
-
-            # Create an empty array for the staggered pressure
             pressure_on_w = xr.full_like(zgrid, np.nan)
 
-            # Log-linear interpolation for interior levels
-            # Corresponds to Fortran k = 2 to nVertLevels
             z_k = zgrid.isel(nVertLevelsP1=slice(1, nVertLevels))
             z_km1 = zgrid.isel(nVertLevelsP1=slice(0, nVertLevels - 1))
             z_kp1 = zgrid.isel(nVertLevelsP1=slice(2, nVertLevels + 1))
-
             p_k = pressure.isel(nVertLevels=slice(1, nVertLevels))
             p_km1 = pressure.isel(nVertLevels=slice(0, nVertLevels - 1))
-
             w1 = (z_k.values - z_km1.values) / (z_kp1.values - z_km1.values)
-            w2 = (z_kp1.values - z_k.values) / (z_kp1.values - z_km1.values)
-
-            log_p_interp = w1 * np.log(p_k.values) + w2 * np.log(p_km1.values)
+            log_p_interp = w1 * np.log(p_k.values) + (1 - w1) * np.log(p_km1.values)
             pressure_on_w.values[:, 1:nVertLevels] = np.exp(log_p_interp)
 
-            # Extrapolation for the bottom level (surface)
-            # Corresponds to Fortran k = 1
-            z0 = zgrid.isel(nVertLevelsP1=0)
-            z1 = 0.5 * (zgrid.isel(nVertLevelsP1=0) + zgrid.isel(nVertLevelsP1=1))
-            z2 = 0.5 * (zgrid.isel(nVertLevelsP1=1) + zgrid.isel(nVertLevelsP1=2))
-            w1_bot = (z0 - z2) / (z1 - z2)
-            w2_bot = 1.0 - w1_bot
-            log_p_bot = w1_bot * np.log(pressure.isel(nVertLevels=0)) + w2_bot * np.log(
-                pressure.isel(nVertLevels=1)
-            )
-            pressure_on_w.values[:, 0] = np.exp(log_p_bot)
-
-            # Extrapolation for the top level
-            # Corresponds to Fortran k = nVertLevelsP1
-            z0 = zgrid.isel(nVertLevelsP1=-1)
-            z1 = 0.5 * (zgrid.isel(nVertLevelsP1=-1) + zgrid.isel(nVertLevelsP1=-2))
-            z2 = 0.5 * (zgrid.isel(nVertLevelsP1=-2) + zgrid.isel(nVertLevelsP1=-3))
-            w1_top = (z0 - z2) / (z1 - z2)
-            w2_top = 1.0 - w1_top
-            log_p_top = w1_top * np.log(
-                pressure.isel(nVertLevels=-1)
-            ) + w2_top * np.log(pressure.isel(nVertLevels=-2))
-            pressure_on_w.values[:, -1] = np.exp(log_p_top)
+            for i, j, k, level_idx in [(0, 0, 1, 2), (-1, -1, -2, -3)]:
+                z0 = zgrid.isel(nVertLevelsP1=i)
+                z1 = 0.5 * (zgrid.isel(nVertLevelsP1=j) + zgrid.isel(nVertLevelsP1=k))
+                z2 = 0.5 * (
+                    zgrid.isel(nVertLevelsP1=k) + zgrid.isel(nVertLevelsP1=level_idx)
+                )
+                w1_bound = (z0 - z2) / (z1 - z2)
+                log_p_bound = w1_bound * np.log(pressure.isel(nVertLevels=j)) + (
+                    1 - w1_bound
+                ) * np.log(pressure.isel(nVertLevels=k))
+                pressure_on_w.values[:, i] = np.exp(log_p_bound)
 
             ds["pressure_on_w"] = pressure_on_w
-            ds["pressure_on_w"].attrs = {
-                "units": "Pa",
-                "long_name": "Pressure on vertical velocity grid",
-            }
+            ds["pressure_on_w"].attrs["units"] = "Pa"
 
-        # --- 5. Derive Total Precipitation (if needed) ---
+        # --- 5. Derive Total Precipitation ---
         if "rainc" in ds and "rainnc" in ds and "tp06" not in ds:
-            logging.info("Deriving 'tp06' from 'rainc' and 'rainnc'.")
-            total_precip = ds["rainc"] + ds["rainnc"]
-            # Preserve metadata and add a descriptive name
-            total_precip.attrs = ds["rainc"].attrs.copy()
-            total_precip.attrs["long_name"] = "Total precipitation"
-            total_precip.attrs["description"] = (
-                "Sum of convective (rainc) and non-convective (rainnc) precipitation."
-            )
-            ds["tp06"] = total_precip
+            ds["tp06"] = ds["rainc"] + ds["rainnc"]
 
-        # --- 6. Derive Surface Geopotential from Terrain Height ---
+        # --- 6. Derive Surface Geopotential ---
         if "ter" in ds and "geopotential_at_surface" not in ds:
-            logging.info("Deriving surface geopotential from terrain height ('ter').")
             ds["geopotential_at_surface"] = ds["ter"] * g
-            ds["geopotential_at_surface"].attrs = {
-                "units": "m^2 s^-2",
-                "long_name": "Geopotential at Surface",
-                "description": "Geopotential calculated from terrain height.",
-            }
+
+        # --- 7. Convert Geometric to Pressure Vertical Velocity ---
+        if (
+            "w" in ds
+            and "pressure_on_w" in ds
+            and "temperature" in ds
+            and "qv" in ds
+            and "pressure_vertical_velocity" not in ds
+        ):
+            logging.info("Deriving pressure vertical velocity from geometric w.")
+            w_geom_q = ds["w"].metpy.quantify()
+            p_on_w_q = ds["pressure_on_w"].metpy.quantify()
+            temp_mid_q = ds["temperature"].metpy.quantify()
+            qv_mid_q = ds["qv"].metpy.quantify()
+
+            # Robust interpolation from cell centers to interfaces
+            temp_mid_vals = temp_mid_q.values
+            qv_mid_vals = qv_mid_q.values
+            temp_on_w_vals = np.zeros_like(w_geom_q.values)
+            qv_on_w_vals = np.zeros_like(w_geom_q.values)
+            temp_on_w_vals[:, 1:-1] = 0.5 * (
+                temp_mid_vals[:, :-1] + temp_mid_vals[:, 1:]
+            )
+            qv_on_w_vals[:, 1:-1] = 0.5 * (qv_mid_vals[:, :-1] + qv_mid_vals[:, 1:])
+            temp_on_w_vals[:, 0] = temp_mid_vals[:, 0]
+            temp_on_w_vals[:, -1] = temp_mid_vals[:, -1]
+            qv_on_w_vals[:, 0] = qv_mid_vals[:, 0]
+            qv_on_w_vals[:, -1] = qv_mid_vals[:, -1]
+
+            # Re-create DataArrays with correct coords/dims and attach units
+            temp_on_w_da = (
+                xr.DataArray(temp_on_w_vals, dims=w_geom_q.dims, coords=w_geom_q.coords)
+                * units.kelvin
+            )
+            qv_on_w_da = (
+                xr.DataArray(qv_on_w_vals, dims=w_geom_q.dims, coords=w_geom_q.coords)
+                * units.dimensionless
+            )
+
+            tv_on_w = temp_on_w_da * (1 + 0.61 * qv_on_w_da)
+            rho_on_w = p_on_w_q / (dry_air_gas_constant * tv_on_w)
+
+            omega = -w_geom_q * g * rho_on_w
+            ds["pressure_vertical_velocity"] = omega.metpy.convert_units("Pa/s")
+
+        # --- 8. Derive Mean Sea Level Pressure ---
+        if (
+            "surface_pressure" in ds
+            and "ter" in ds
+            and "t2m" in ds
+            and "mean_sea_level_pressure" not in ds
+        ):
+            logging.info("Deriving mean sea level pressure from surface pressure.")
+            p_sfc_q = ds["surface_pressure"].metpy.quantify()
+            h_sfc_q = ds["ter"].metpy.quantify()
+            t_sfc_q = ds["t2m"].metpy.quantify()
+
+            p_msl = p_sfc_q * np.exp((g * h_sfc_q) / (dry_air_gas_constant * t_sfc_q))
+            ds["mean_sea_level_pressure"] = p_msl
 
         return ds
