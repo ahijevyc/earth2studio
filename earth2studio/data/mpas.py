@@ -368,6 +368,9 @@ class MPASHybrid(_MPASBase):
             pres_field: np.ndarray,
             targets: np.ndarray,
             var_name: str,
+            surface_temperature: np.ndarray,
+            surface_pressure: np.ndarray,
+            surface_geopotential: np.ndarray,
         ) -> np.ndarray:
             """
 
@@ -392,41 +395,41 @@ class MPASHybrid(_MPASBase):
                 )
 
                 # --- Fill/Extrapolate below-ground points ---
-                surface_pressure = source_pres[-1]
+                p_sfc = surface_pressure[i]
                 surface_value = source_data[-1]
-                # Mask for target levels that are below the surface (higher pressure)
-                below_ground_mask = targets > surface_pressure
+                # Mask for target levels that are below last pressure level (not necessary the surface but half-level higher?)
+                # Because these were the source_pres for np.interp vertical.
+                # if you use targets > p_sfc, you still might have nans for targets between last pressure level and p_sfc.
+                below_ground_mask = targets > source_pres[-1]
 
+                # Extrapolate downwards using a standard lapse rate L.
+                # T(p) = t_sfc * (p / p_sfc) ^ (R_d * L / g)
+                # z(p) = z_sfc + t_sfc / L * (1 - p / p_sfc) ^ (R_d * L / g)
+                exponent = (
+                    dry_air_gas_constant.magnitude * STANDARD_LAPSE_RATE
+                ) / g.magnitude
+                t_sfc = surface_temperature[i]
+
+                p_target = targets[below_ground_mask]
                 # Apply special extrapolation for temperature and geopotential
                 if var_name == "temperature":
-                    # Extrapolate T downwards using a standard lapse rate.
-                    # T(p) = T_sfc * (p / p_sfc) ^ (R_d * L / g)
-                    t_sfc = surface_value
-                    p_sfc = surface_pressure
-                    exponent = (
-                        dry_air_gas_constant.magnitude * STANDARD_LAPSE_RATE
-                    ) / g.magnitude
-                    p_target = targets[below_ground_mask]
                     extrap_values = t_sfc * (p_target / p_sfc) ** exponent
                     interp_results[below_ground_mask] = extrap_values
 
-                elif var_name in ["geopotential_at_surface", "geopotential"]:
-                    # Use last two valid points to define a slope in log-pressure space
-                    if len(source_pres) > 1:
-                        log_p2, log_p1 = np.log(source_pres[-2:])
-                        val2, val1 = source_data[-2:]
-                        # Avoid division by zero if pressures are identical
-                        if not np.isclose(log_p1, log_p2):
-                            slope = (val1 - val2) / (log_p1 - log_p2)
-                            # Extrapolate from the surface point (p1, val1)
-                            extrap_values = val1 + slope * (
-                                np.log(targets[below_ground_mask]) - log_p1
-                            )
-                            interp_results[below_ground_mask] = extrap_values
+                elif var_name == "geopotential":
+                    z_sfc = surface_geopotential[i]
+                    extrap_values = (
+                        z_sfc
+                        + t_sfc
+                        * g.magnitude
+                        / STANDARD_LAPSE_RATE
+                        * (1 - (p_target / p_sfc) ** exponent)
+                    )
+                    interp_results[below_ground_mask] = extrap_values
 
-                # For all other variables, and as a fallback, persist surface value
-                final_below_ground_mask = np.isnan(interp_results) & below_ground_mask
-                interp_results[final_below_ground_mask] = surface_value
+                else:
+                    # For all other variables, and as a fallback, persist surface value
+                    interp_results[below_ground_mask] = surface_value
 
                 output[i, :] = interp_results
             return output
@@ -438,12 +441,21 @@ class MPASHybrid(_MPASBase):
             if (is_main or is_staggered) and name in vars_to_interp:
                 logging.info(f"Interpolating variable: {name}")
                 pressure_field = ds["pressure"] if is_main else ds["pressure_on_w"]
+                surface_temperature = ds["t2m"].values
+                surface_pressure = ds["surface_pressure"].values
+                surface_geopotential = ds["geopotential_at_surface"].values
 
                 data_np = da.values
                 pressure_np = pressure_field.values
 
                 interp_data = interp_and_fill_field(
-                    data_np, pressure_np, np.array(target_levels_pa), name
+                    data_np,
+                    pressure_np,
+                    np.array(target_levels_pa),
+                    name,
+                    surface_temperature,
+                    surface_pressure,
+                    surface_geopotential,
                 )
 
                 interpolated_vars[name] = xr.DataArray(

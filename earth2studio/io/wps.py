@@ -37,9 +37,9 @@ class WPSBackend(IOBackend):
         "w": ("WW", "Pa s-1", "Vertical Velocity", -1),
         "msl": ("PMSL", "Pa", "Sea Level Pressure", 201300.0),
         "lsm": ("LANDSEA", "proportion", "Land/Sea Mask", 200100.0),
-        "t2m": ("T2", "K", "2-meter Temperature", 200100.0),
-        "u10m": ("U10", "m s-1", "10-meter U-wind", 200100.0),
-        "v10m": ("V10", "m s-1", "10-meter V-wind", 200100.0),
+        "t2m": ("TT", "K", "2-meter Temperature", 200100.0),
+        "u10m": ("UU", "m s-1", "10-meter U-wind", 200100.0),
+        "v10m": ("VV", "m s-1", "10-meter V-wind", 200100.0),
         "tp": ("PRECIP", "kg m-2", "Total Precipitation", 200100.0),
     }
 
@@ -267,6 +267,7 @@ class WPSBackend(IOBackend):
 
                 final_xlvl: float
                 if str(var_name_str) == "z":
+                    field_name = "SOILGHT"
                     final_xlvl = 200100.0
                 elif xlvl_code == -1:
                     level_match = re.search(r"(\d+)$", str(var_name_str))
