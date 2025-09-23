@@ -337,7 +337,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 dims=("nCells", "nVertLevels"),
                 coords=height_coords,
             )
-            ds["height"] = height_da
+            ds["height"] = height_da * units.m
             ds["geopotential"] = ds["height"] * g
 
         # --- 4. Derive Pressure on the staggered 'w' grid ---
@@ -377,11 +377,16 @@ class MPASHybridLexicon(metaclass=LexiconType):
 
         # --- 5. Derive Total Precipitation ---
         if "rainc" in ds and "rainnc" in ds and "tp06" not in ds:
-            ds["tp06"] = ds["rainc"] + ds["rainnc"]
+            ds["tp06"] = ds["rainc"].metpy.quantify() + ds["rainnc"].metpy.quantify()
+            ds["tp06"] = ds["tp06"].metpy.convert_units(
+                "m"
+            )  # Graphcast outputs precip in m. Input should be too.
 
         # --- 6. Derive Surface Geopotential ---
         if "ter" in ds and "geopotential_at_surface" not in ds:
-            ds["geopotential_at_surface"] = ds["ter"] * g
+            ds["geopotential_at_surface"] = (
+                ds["ter"].metpy.quantify() * g
+            ).metpy.dequantify()
 
         # --- 7. Convert Geometric to Pressure Vertical Velocity ---
         if (
@@ -430,16 +435,48 @@ class MPASHybridLexicon(metaclass=LexiconType):
         # --- 8. Derive Mean Sea Level Pressure ---
         if (
             "surface_pressure" in ds
-            and "ter" in ds
-            and "t2m" in ds
+            and "geopotential_at_surface" in ds
+            and "pressure" in ds
+            and "temperature" in ds
             and "mean_sea_level_pressure" not in ds
         ):
-            logging.info("Deriving mean sea level pressure from surface pressure.")
+            logging.info(
+                "Deriving mean sea level pressure from sfc press, sfc geopotential, pressure, and temperature."
+            )
             p_sfc_q = ds["surface_pressure"].metpy.quantify()
-            h_sfc_q = ds["ter"].metpy.quantify()
-            t_sfc_q = ds["t2m"].metpy.quantify()
+            z_sfc_q = ds["geopotential_at_surface"].metpy.quantify()
+            # Eqn (1) in FULL-POS in the IFS. https://www.umr-cnrm.fr/gmapdoc/IMG/pdf/ykfpos46t1r1.pdf
+            gamma = xr.full_like(z_sfc_q, STANDARD_LAPSE_RATE * units.K / units.m)
+            if (
+                ds["pressure"].isel(nVertLevels=0).mean()
+                < ds["pressure"].isel(nVertLevels=-1).mean()
+            ):
+                logging.error(f'expected pressure in decreasing order {ds["pressure"]}')
+            t_Le_q = ds["temperature"].isel(nVertLevels=0).metpy.quantify()
+            p_Le_q = ds["pressure"].isel(nVertLevels=0).metpy.quantify()
+            t_sfc_q = (
+                t_Le_q
+                + gamma * dry_air_gas_constant / g * (p_sfc_q / p_Le_q - 1) * t_Le_q
+            )
+            t_msl_q = t_sfc_q + gamma * z_sfc_q / g
 
-            p_msl = p_sfc_q * np.exp((g * h_sfc_q) / (dry_air_gas_constant * t_sfc_q))
+            T_THRESHOLD_1 = 290.5 * units.K
+            T_THRESHOLD_2 = 255.0 * units.K
+            cond1 = (t_msl_q > T_THRESHOLD_1) & (t_sfc_q <= T_THRESHOLD_1)
+            cond2 = (t_msl_q > T_THRESHOLD_1) & (t_sfc_q > T_THRESHOLD_1)
+            gamma[cond1] = (T_THRESHOLD_1 - t_sfc_q[cond1]) * g / z_sfc_q[cond1]
+
+            gamma[cond2] = xr.DataArray(0.0) * units.K / units.m
+            t_sfc_q[cond2] = 0.5 * (T_THRESHOLD_1 + t_sfc_q[cond2])
+
+            cond3 = t_sfc_q < T_THRESHOLD_2
+            gamma[cond3] = xr.DataArray(STANDARD_LAPSE_RATE) * units.K / units.m
+            t_sfc_q[cond3] = 0.5 * (T_THRESHOLD_2 + t_sfc_q[cond3])
+
+            x = gamma * z_sfc_q / (g * t_sfc_q)
+            p_msl = p_sfc_q * np.exp(
+                z_sfc_q / (dry_air_gas_constant * t_sfc_q) * (1 - x / 2 + (x**2) / 3)
+            )
             ds["mean_sea_level_pressure"] = p_msl
 
         return ds

@@ -40,7 +40,7 @@ class WPSBackend(IOBackend):
         "t2m": ("TT", "K", "2-meter Temperature", 200100.0),
         "u10m": ("UU", "m s-1", "10-meter U-wind", 200100.0),
         "v10m": ("VV", "m s-1", "10-meter V-wind", 200100.0),
-        "tp": ("PRECIP", "kg m-2", "Total Precipitation", 200100.0),
+        "tp": ("PRECIP", "kg m-2", "Total Precipitation 6-h", 200100.0),
     }
 
     # Format strings based on the reference Fortran source.
@@ -260,6 +260,9 @@ class WPSBackend(IOBackend):
                     da = da.squeeze("time")
                 if "lat" in da.dims and "lon" in da.dims:
                     da = da.transpose(..., "lat", "lon")
+                if base_var == "tp":
+                    # convert m to kg / m**2
+                    da = da * 1000.0
                 if base_var == "z":
                     da = da / g.magnitude
 
