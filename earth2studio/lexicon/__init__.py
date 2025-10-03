@@ -24,6 +24,7 @@ from .goes import GOESLexicon
 from .hrrr import HRRRFXLexicon, HRRRLexicon
 from .ifs import IFSLexicon
 from .imerg import IMERGLexicon
+from .jpss import JPSSLexicon
 from .mpas import MPASLexicon
 from .ncar import NCAR_ERA5Lexicon
 from .wb2 import WB2ClimatetologyLexicon, WB2Lexicon
