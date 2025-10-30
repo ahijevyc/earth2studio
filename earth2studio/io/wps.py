@@ -1,7 +1,6 @@
 # =============================================================================
 # Imports
 # =============================================================================
-import logging
 import re
 import struct
 from collections import OrderedDict
@@ -11,6 +10,7 @@ from typing import IO, Any
 import numpy as np
 import pandas as pd
 import xarray as xr
+from loguru import logger
 from metpy.constants import g
 
 from earth2studio.io import IOBackend
@@ -98,7 +98,7 @@ class WPSBackend(IOBackend):
         """
         # Capture static fields on the very first write call
         if self.stored_static_data is None and self.static_field_names:
-            logging.info(
+            logger.info(
                 f"Capturing static fields from initial time step: {self.static_field_names}"
             )
 
@@ -186,7 +186,7 @@ class WPSBackend(IOBackend):
         to a dynamically named binary file.
         """
         if self.final_data_package is None:
-            logging.warning("WPSBackend closing, but no data was provided to write.")
+            logger.warning("WPSBackend closing, but no data was provided to write.")
             return
 
         data_list, coords, array_name = self.final_data_package
@@ -203,7 +203,7 @@ class WPSBackend(IOBackend):
         output_path = self.output_dir / filename
 
         if output_path.exists():
-            logging.warning(
+            logger.warning(
                 f"Output file {output_path} already exists and will be overwritten."
             )
             output_path.unlink()
@@ -220,7 +220,7 @@ class WPSBackend(IOBackend):
 
         # --- Inject stored static fields ---
         if self.stored_static_data is not None:
-            logging.info("Overriding variables with stored static fields.")
+            logger.info("Overriding variables with stored static fields.")
             # Squeeze lead_time from static data to match dynamic data
             static_ds_squeezed = self.stored_static_data.squeeze("lead_time", drop=True)
             ds.update(static_ds_squeezed)
@@ -234,7 +234,7 @@ class WPSBackend(IOBackend):
         else:
             xfcst = 0.0
 
-        logging.info(
+        logger.info(
             f"Writing final forecast step for time {hdate} (F{xfcst:03.0f}) to {output_path}"
         )
 
@@ -250,7 +250,7 @@ class WPSBackend(IOBackend):
                         base_var = match.group(1)
 
                 if not base_var:
-                    logging.warning(f"No WPS mapping for '{var_name_str}', skipping.")
+                    logger.warning(f"No WPS mapping for '{var_name_str}', skipping.")
                     continue
 
                 field_name, units, desc, xlvl_code = self.VARIABLE_MAP[base_var]
@@ -296,4 +296,4 @@ class WPSBackend(IOBackend):
                     xfcst,
                 )
 
-        logging.info(f"WPSBackend closed. Final output: {output_path}")
+        logger.info(f"WPSBackend closed. Final output: {output_path}")

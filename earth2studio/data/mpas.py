@@ -3,7 +3,6 @@
 # =============================================================================
 import dataclasses
 import datetime
-import logging
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -11,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
+from loguru import logger
 from metpy.constants import dry_air_gas_constant, g
 from scipy.spatial import KDTree
 
@@ -24,13 +24,6 @@ from earth2studio.utils.time import xtime
 # =============================================================================
 # Standard lapse rate in K/m for temperature extrapolation below ground.
 STANDARD_LAPSE_RATE = 0.0065
-
-# =============================================================================
-# Logging Configuration
-# =============================================================================
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 
 
 # =============================================================================
@@ -83,6 +76,22 @@ class _MPASBase(DataSource):
 
         self.distance, self.indices = self._prepare_regridding_indices()
 
+        # Create a target index for xarray's advanced indexing
+        self.target_grid_index = xr.DataArray(
+            self.indices,
+            dims=["lat_lon"],
+            coords={
+                "lat": (
+                    "lat_lon",
+                    np.meshgrid(self.target_lon, self.target_lat)[1].ravel(),
+                ),
+                "lon": (
+                    "lat_lon",
+                    np.meshgrid(self.target_lon, self.target_lat)[0].ravel(),
+                ),
+            },
+        ).set_index(lat_lon=["lat", "lon"])
+
         with xr.open_dataset(self.grid_path) as grid_ds:
             self.grid_ncells = grid_ds.sizes["nCells"]
 
@@ -92,11 +101,11 @@ class _MPASBase(DataSource):
         cached_file = self.cache_path / cache_file_name
 
         if cached_file.exists():
-            logging.info(f"Loading cached regridding indices from {cached_file}")
+            logger.info(f"Loading cached regridding indices from {cached_file}")
             data = np.load(cached_file)
             return data["dists"], data["inds"]
 
-        logging.info("Building KDTree from MPAS grid to compute regridding indices...")
+        logger.info("Building KDTree from MPAS grid to compute regridding indices...")
         with xr.open_dataset(self.grid_path) as grid:
             lon_cell = grid["lonCell"]
             lat_cell = grid["latCell"]
@@ -124,10 +133,10 @@ class _MPASBase(DataSource):
         target_xyz = self._lon_lat_to_cartesian(target_lon_rad, target_lat_rad)
 
         kdtree = KDTree(mpas_xyz)
-        logging.info("Querying tree to find nearest neighbors...")
+        logger.info("Querying tree to find nearest neighbors...")
         distance, indices = kdtree.query(target_xyz)
 
-        logging.info(f"Saving new regridding indices to {cached_file}")
+        logger.info(f"Saving new regridding indices to {cached_file}")
         np.savez_compressed(cached_file, dists=distance, inds=indices)
         return distance, indices
 
@@ -163,10 +172,10 @@ class MPAS(_MPASBase):
     ) -> xr.Dataset:
         """
         Loads, derives variables, and regrids a single time slice of
-        pressure-level data by dynamically finding the correct file.
+        pressure-level data in self.data_path.
         """
         source_variables = self.lexicon.required_variables(list(variables))
-        logging.info(f"Requesting source variables for time {time}: {source_variables}")
+        logger.info(f"Requesting source variables for time {time}: {source_variables}")
 
         # Convert numpy.datetime64 to pandas Timestamp, which has strftime
         time_pd = pd.to_datetime(time)
@@ -196,39 +205,18 @@ class MPAS(_MPASBase):
             ]
             ds_processed = ds_derived[final_vars_to_keep].load()
 
-        logging.info("Regridding data...")
+        logger.info("Regridding data...")
         ds_regridded = self._regrid_dataset(ds_processed)
-        logging.info("Regridding complete.")
+        logger.info("Regridding complete.")
         return ds_regridded
 
     def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
         """Remaps from the unstructured grid to a regular lat-lon grid."""
-        regridded_data = ds_mpas.isel(nCells=self.indices)
-
-        new_shape = [
-            size for dim, size in regridded_data.sizes.items() if dim != "nCells"
-        ] + [len(self.target_lat), len(self.target_lon)]
-
-        new_coords = {
-            dim: coord
-            for dim, coord in regridded_data.coords.items()
-            if dim != "nCells"
-        }
-        new_coords["lat"] = self.target_lat
-        new_coords["lon"] = self.target_lon
-
-        new_dims = [dim for dim in regridded_data.dims if dim != "nCells"] + [
-            "lat",
-            "lon",
-        ]
-
-        regridded_vars = {}
-        for var_name, da in regridded_data.data_vars.items():
-            reshaped_values = da.values.reshape(new_shape)
-            regridded_vars[var_name] = xr.DataArray(
-                reshaped_values, coords=new_coords, dims=new_dims
-            )
-        return xr.Dataset(regridded_vars, attrs=ds_mpas.attrs)
+        # Select the cells at the target grid points
+        # This creates a 1D array with a multi-index (lat, lon)
+        regridded_da = ds_mpas.isel(nCells=self.target_grid_index)
+        # Unstack the 1D array into a 2D (or 3D) grid
+        return regridded_da.unstack("lat_lon")
 
     def _finalize_dataset(
         self, ds_regridded: xr.Dataset, variables: list[str]
@@ -295,10 +283,10 @@ class MPASHybrid(_MPASBase):
     ) -> xr.Dataset:
         """
         Loads, processes (including vertical interpolation), and regrids data
-        by dynamically finding the correct file for the requested time.
+        in self.data_path.
         """
         source_variables = self.lexicon.required_variables(list(variables))
-        logging.info(f"Requesting source variables for time {time}: {source_variables}")
+        logger.info(f"Requesting source variables for time {time}: {source_variables}")
 
         # Convert numpy.datetime64 to pandas Timestamp, which has strftime
         time_pd = pd.to_datetime(time)
@@ -308,7 +296,6 @@ class MPASHybrid(_MPASBase):
             raise FileNotFoundError(f"MPAS file not found for time {time} at: {path}")
 
         with xtime(xr.open_dataset(path)) as ds_mpas:
-            # Select exact time, will raise KeyError if not found.
             ds_slice = ds_mpas.sel(time=time)
 
             if "time" in ds_slice.coords:
@@ -320,8 +307,8 @@ class MPASHybrid(_MPASBase):
                     f"Grid mismatch: Grid file has {self.grid_ncells} cells, "
                     f"data file has {ds_slice.sizes['nCells']} cells."
                 )
-            time_vars_to_load = [v for v in source_variables if v in ds_slice.data_vars]
-            ds_loaded = ds_slice[time_vars_to_load].load()
+            data_vars_to_load = [v for v in source_variables if v in ds_slice.data_vars]
+            ds_loaded = ds_slice[data_vars_to_load].load()
 
         with xr.open_dataset(self.grid_path) as grid_ds:
             grid_vars_to_load = [v for v in source_variables if v in grid_ds.data_vars]
@@ -334,7 +321,7 @@ class MPASHybrid(_MPASBase):
         if self.pressure_levels is not None:
             is_3d_request = any(self.lexicon.is_3d_variable(v) for v in variables)
             if is_3d_request:
-                logging.info(
+                logger.info(
                     f"3D variable requested. Performing vertical interpolation to {list(self.pressure_levels)} hPa."
                 )
                 pressure_levels_pa = [p * 100 for p in self.pressure_levels]
@@ -342,9 +329,9 @@ class MPASHybrid(_MPASBase):
                     ds_derived, pressure_levels_pa, variables
                 )
 
-        logging.info("Regridding data...")
+        logger.info("Regridding data...")
         ds_regridded = self._regrid_dataset(ds_processed)
-        logging.info("Regridding complete.")
+        logger.info("Regridding complete.")
         return ds_regridded
 
     def _interpolate_to_pressure_levels(
@@ -357,161 +344,120 @@ class MPASHybrid(_MPASBase):
         Interpolates data from native hybrid levels to pressure levels, handling
         below-terrain points by either persisting surface values or extrapolating.
         """
+
+        def vectorized_interp_core(
+            data: np.ndarray, pressure: np.ndarray, targets: np.ndarray
+        ) -> np.ndarray:
+            """
+            Core numpy-based interpolation function for apply_ufunc.
+            data: (nVertLevels,)
+            pressure: (nVertLevels,)
+            targets: (level,)
+            Returns: (level,)
+            """
+            # Ensure pressure is increasing
+            if pressure[0] > pressure[-1]:
+                pressure = pressure[::-1]
+                data = data[::-1]
+            return np.interp(targets, pressure, data, left=np.nan, right=np.nan)
+
         vars_to_interp = {
             self.lexicon.get_derived_name(v)
             for v in requested_variables
             if self.lexicon.is_3d_variable(v)
         }
 
-        def interp_and_fill_field(
-            data_field: np.ndarray,
-            pres_field: np.ndarray,
-            targets: np.ndarray,
-            var_name: str,
-            surface_temperature: np.ndarray,
-            surface_pressure: np.ndarray,
-            surface_geopotential: np.ndarray,
-        ) -> np.ndarray:
-            """
-
-            Performs interpolation and fills/extrapolates below-ground NaNs
-            for a single variable field across all horizontal cells.
-            """
-            output = np.full(
-                (data_field.shape[0], len(targets)), np.nan, dtype=data_field.dtype
-            )
-            # Loop over each horizontal cell (atmospheric column)
-            for i in range(data_field.shape[0]):
-                source_pres = pres_field[i, :]
-                source_data = data_field[i, :]
-
-                # Ensure pressure is monotonically increasing for numpy.interp
-                if source_pres[0] > source_pres[-1]:
-                    source_pres, source_data = source_pres[::-1], source_data[::-1]
-
-                # Perform standard interpolation, leaving NaNs for out-of-bounds points
-                interp_results = np.interp(
-                    targets, source_pres, source_data, left=np.nan, right=np.nan
-                )
-
-                # --- Fill/Extrapolate below-ground points ---
-                p_sfc = surface_pressure[i]
-                surface_value = source_data[-1]
-                # Mask for target levels that are below last pressure level (not necessary the surface but half-level higher?)
-                # Because these were the source_pres for np.interp vertical.
-                # if you use targets > p_sfc, you still might have nans for targets between last pressure level and p_sfc.
-                below_ground_mask = targets > source_pres[-1]
-
-                # Extrapolate downwards using a standard lapse rate L.
-                # T(p) = t_sfc * (p / p_sfc) ^ (R_d * L / g)
-                # z(p) = z_sfc + t_sfc / L * (1 - p / p_sfc) ^ (R_d * L / g)
-                exponent = (
-                    dry_air_gas_constant.magnitude * STANDARD_LAPSE_RATE
-                ) / g.magnitude
-                t_sfc = surface_temperature[i]
-
-                p_target = targets[below_ground_mask]
-                # Apply special extrapolation for temperature and geopotential
-                if var_name == "temperature":
-                    extrap_values = t_sfc * (p_target / p_sfc) ** exponent
-                    interp_results[below_ground_mask] = extrap_values
-
-                elif var_name == "geopotential":
-                    z_sfc = surface_geopotential[i]
-                    extrap_values = (
-                        z_sfc
-                        + t_sfc
-                        * g.magnitude
-                        / STANDARD_LAPSE_RATE
-                        * (1 - (p_target / p_sfc) ** exponent)
-                    )
-                    interp_results[below_ground_mask] = extrap_values
-
-                else:
-                    # For all other variables, and as a fallback, persist surface value
-                    interp_results[below_ground_mask] = surface_value
-
-                output[i, :] = interp_results
-            return output
+        # Create a 1D DataArray for target pressure levels
+        target_levels_pa_da = xr.DataArray(
+            target_levels_pa,
+            dims=["level"],
+            coords={"level": [p / 100 for p in target_levels_pa]},
+        )
+        target_levels_pa_da.level.attrs["units"] = "hPa"
 
         interpolated_vars = {}
         for name, da in ds.data_vars.items():
             is_main = "nVertLevels" in da.dims
             is_staggered = "nVertLevelsP1" in da.dims
+
             if (is_main or is_staggered) and name in vars_to_interp:
-                logging.info(f"Interpolating variable: {name}")
+                logger.info(f"Interpolating variable: {name}")
                 pressure_field = ds["pressure"] if is_main else ds["pressure_on_w"]
-                surface_temperature = ds["t2m"].values
-                surface_pressure = ds["surface_pressure"].values
-                surface_geopotential = ds["geopotential_at_surface"].values
+                vert_dim = "nVertLevels" if is_main else "nVertLevelsP1"
+                is_ascending = pressure_field.isel(
+                    {"nCells": 0, vert_dim: 0}
+                ) > pressure_field.isel({"nCells": 0, vert_dim: -1})
+                lowest_model_level = 0 if is_ascending else -1
 
-                data_np = da.values
-                pressure_np = pressure_field.values
-
-                interp_data = interp_and_fill_field(
-                    data_np,
-                    pressure_np,
-                    np.array(target_levels_pa),
-                    name,
-                    surface_temperature,
-                    surface_pressure,
-                    surface_geopotential,
+                # 1. Perform vectorized interpolation
+                interp_da_nocoords = xr.apply_ufunc(
+                    vectorized_interp_core,
+                    da,
+                    pressure_field,
+                    target_levels_pa_da,  # Pass the 1D target levels
+                    input_core_dims=[[vert_dim], [vert_dim], ["level"]],
+                    output_core_dims=[["level"]],  # Output has 'level' dim
+                    exclude_dims={vert_dim, "level"},
+                    vectorize=True,
+                    output_dtypes=[da.dtype],
+                )
+                interp_da = interp_da_nocoords.assign_coords(
+                    level=target_levels_pa_da.level
                 )
 
-                interpolated_vars[name] = xr.DataArray(
-                    interp_data,
-                    dims=["nCells", "level"],
-                    coords={
-                        "nCells": da.coords["nCells"],
-                        "level": [p / 100 for p in target_levels_pa],
-                    },
-                )
+                # 2. Get mask of all pts that need filling.
+                nan_mask = interp_da.isnull()
+
+                surface_pressure = ds["surface_pressure"]
+
+                # Prepare ratios needed for extrapolation formulas
+                p_ratio = target_levels_pa_da / surface_pressure
+                exponent = (
+                    dry_air_gas_constant.magnitude * STANDARD_LAPSE_RATE
+                ) / g.magnitude
+
+                if name == "temperature":
+                    # T(p) = t_sfc * (p / p_sfc) ^ (R_d * L / g)
+                    surface_temperature = ds["t2m"]
+                    extrap_values = surface_temperature * (p_ratio**exponent)
+                    final_da = xr.where(
+                        nan_mask, extrap_values.metpy.dequantify(), interp_da
+                    )
+
+                elif name == "geopotential":
+                    surface_geopotential = ds["geopotential_at_surface"]
+                    surface_temperature = ds["t2m"]
+                    # phi(p) = phi_sfc + (g * T_sfc / L) * (1 - (p / p_sfc)^(R*L/g))
+                    extrap_values = surface_geopotential + (
+                        surface_temperature * g.magnitude / STANDARD_LAPSE_RATE
+                    ) * (1 - (p_ratio**exponent))
+                    final_da = xr.where(
+                        nan_mask, extrap_values.metpy.dequantify(), interp_da
+                    )
+
+                else:
+                    # For all other variables, fill NaNs by persisting surface value
+                    surface_value = da.isel(
+                        {vert_dim: lowest_model_level}
+                    ).metpy.dequantify()
+                    final_da = interp_da.fillna(surface_value)
+
+                interpolated_vars[name] = final_da
+
             elif not is_main and not is_staggered:
-                interpolated_vars[name] = da
+                # This is a 2D variable, dequantify it as well
+                interpolated_vars[name] = da.metpy.dequantify()
 
         interp_ds = xr.Dataset(interpolated_vars, attrs=ds.attrs)
-        interp_ds.level.attrs["units"] = "hPa"
         return interp_ds
 
     def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
         """Remaps from the unstructured grid to a regular lat-lon grid."""
-        regridded_data = ds_mpas.isel(nCells=self.indices)
-
-        base_coords = {
-            dim: coord
-            for dim, coord in regridded_data.coords.items()
-            if dim != "nCells"
-        }
-        base_coords["lat"] = xr.DataArray(self.target_lat, dims=["lat"])
-        base_coords["lon"] = xr.DataArray(self.target_lon, dims=["lon"])
-
-        regridded_vars = {}
-        for var_name, da in regridded_data.data_vars.items():
-            other_dims = [dim for dim in da.dims if dim != "nCells"]
-            new_dims = other_dims + ["lat", "lon"]
-
-            variable_coords = {
-                k: v
-                for k, v in base_coords.items()
-                if all(dim in new_dims for dim in v.dims)
-            }
-
-            if "level" in new_dims:
-                temp_shape = (
-                    len(self.target_lat),
-                    len(self.target_lon),
-                    da.sizes["level"],
-                )
-                reshaped_values = da.values.reshape(temp_shape).transpose((2, 0, 1))
-                new_dims = ["level", "lat", "lon"]
-            else:
-                new_shape = (len(self.target_lat), len(self.target_lon))
-                reshaped_values = da.values.reshape(new_shape)
-
-            regridded_vars[var_name] = xr.DataArray(
-                reshaped_values, coords=variable_coords, dims=new_dims
-            )
-        return xr.Dataset(regridded_vars, attrs=ds_mpas.attrs)
+        # Select the cells at the target grid points
+        # This creates a 1D array with a multi-index (lat, lon)
+        regridded_da = ds_mpas.isel(nCells=self.target_grid_index)
+        # Unstack the 1D array into a 2D (or 3D) grid
+        return regridded_da.unstack("lat_lon")
 
     def _finalize_dataset(
         self, ds_regridded: xr.Dataset, variables: list[str]

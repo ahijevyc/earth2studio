@@ -1,12 +1,12 @@
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 # Imports
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-import logging
 import re
 
 import metpy.xarray  # noqa: F401 (activates .metpy accessor)
 import numpy as np
 import xarray as xr
+from loguru import logger
 from metpy.calc import mixing_ratio_from_relative_humidity
 from metpy.constants import (
     dry_air_gas_constant,
@@ -144,7 +144,7 @@ class MPASLexicon(metaclass=LexiconType):
                     try:
                         required.add(cls.get_item(var))
                     except KeyError:
-                        logging.warning(
+                        logger.warning(
                             f"No mapping for '{var}' found. Adding directly."
                         )
                         required.add(var)
@@ -153,7 +153,7 @@ class MPASLexicon(metaclass=LexiconType):
                 try:
                     required.add(cls.get_item(var))
                 except KeyError:
-                    logging.warning(f"No mapping for '{var}' found. Adding directly.")
+                    logger.warning(f"No mapping for '{var}' found. Adding directly.")
                     required.add(var)
 
         return list(required)
@@ -172,7 +172,7 @@ class MPASLexicon(metaclass=LexiconType):
         for h_var in height_vars:
             g_var = h_var.replace(MPASLexicon._HEIGHT_PREFIX, MPASLexicon._GPH_PREFIX)
             if g_var not in ds:
-                logging.info(f"Deriving '{g_var}' from '{h_var}'.")
+                logger.info(f"Deriving '{g_var}' from '{h_var}'.")
                 ds[g_var] = ds[h_var] * g.m
 
         # --- Derive Mixing Ratio from Relative Humidity ---
@@ -183,7 +183,7 @@ class MPASLexicon(metaclass=LexiconType):
             )
             t_var = rh_var.replace(MPASLexicon._RELHUM_PREFIX, MPASLexicon._TEMP_PREFIX)
             if q_var not in ds and t_var in ds:
-                logging.info(f"Deriving '{q_var}' from '{rh_var}' and '{t_var}'.")
+                logger.info(f"Deriving '{q_var}' from '{rh_var}' and '{t_var}'.")
                 pressure_hpa = float(rh_var.split("_")[-1][:-3]) * units.hPa
                 temperature_k = ds[t_var] * units.kelvin
                 relative_humidity = ds[rh_var]
@@ -251,19 +251,23 @@ class MPASHybridLexicon(metaclass=LexiconType):
                     try:
                         required.add(cls.get_item(var))
                     except KeyError:
-                        logging.warning(f"No mapping for '{var}'. Adding directly.")
+                        logger.warning(f"No mapping for '{var}'. Adding directly.")
                         required.add(var)
                 continue
 
             # --- Everything below this point is a 3D variable ---
             base_var = re.sub(r"\d+$", "", var)
-            required.update(["pressure_p", "pressure_base"])
             required.add(cls.get_item(base_var))
-
+            required.update(["pressure_p", "pressure_base"])
+            # needed to interpolate below surface (in MPASHybrid DataSource).
+            required.add("surface_pressure")
+            if base_var in ["t", "z"]:
+                # to interpolate geopotential below surface (in MPASHybrid DataSource).
+                required.add("t2m")
+                if base_var == "z":
+                    required.add("ter")
             if base_var == "w":
-                required.add("zgrid")
-                required.add("theta")
-                required.add("qv")
+                required.update(["zgrid", "theta", "qv"])
 
         return list(required)
 
@@ -347,6 +351,8 @@ class MPASHybridLexicon(metaclass=LexiconType):
             and "pressure" in ds
             and "pressure_on_w" not in ds
         ):
+            # This is a complex interpolation to get pressure
+            # at the same vertical levels as 'w'.
             pressure, zgrid = ds["pressure"], ds["zgrid"]
             nVertLevels = ds.sizes["nVertLevels"]
             pressure_on_w = xr.full_like(zgrid, np.nan)
@@ -360,6 +366,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
             log_p_interp = w1 * np.log(p_k.values) + (1 - w1) * np.log(p_km1.values)
             pressure_on_w.values[:, 1:nVertLevels] = np.exp(log_p_interp)
 
+            # Handle boundary conditions (top and bottom)
             for i, j, k, level_idx in [(0, 0, 1, 2), (-1, -1, -2, -3)]:
                 z0 = zgrid.isel(nVertLevelsP1=i)
                 z1 = 0.5 * (zgrid.isel(nVertLevelsP1=j) + zgrid.isel(nVertLevelsP1=k))
@@ -375,15 +382,17 @@ class MPASHybridLexicon(metaclass=LexiconType):
             ds["pressure_on_w"] = pressure_on_w
             ds["pressure_on_w"].attrs["units"] = "Pa"
 
-        # --- 5. Derive Total Precipitation ---
+        # --- 5. Derive Total Precipitation (m) ---
         if "rainc" in ds and "rainnc" in ds and "tp06" not in ds:
+            # Graphcast expects precip in meters, so we convert.
             ds["tp06"] = ds["rainc"].metpy.quantify() + ds["rainnc"].metpy.quantify()
             ds["tp06"] = ds["tp06"].metpy.convert_units(
                 "m"
             )  # Graphcast outputs precip in m. Input should be too.
 
-        # --- 6. Derive Surface Geopotential ---
+        # --- 6. Derive Surface Geopotential (m^2/s^2) ---
         if "ter" in ds and "geopotential_at_surface" not in ds:
+            # 'ter' is terrain height in 'm'
             ds["geopotential_at_surface"] = (
                 ds["ter"].metpy.quantify() * g
             ).metpy.dequantify()
@@ -396,13 +405,23 @@ class MPASHybridLexicon(metaclass=LexiconType):
             and "qv" in ds
             and "pressure_vertical_velocity" not in ds
         ):
-            logging.info("Deriving pressure vertical velocity from geometric w.")
+            # ================== THE 'w' to 'omega' FACTORY ==================
+            # This is the core conversion.
+            # 1. Get all ingredients (w, p, T, qv).
+            # 2. T and qv are on mid-levels, w and p are on staggered levels.
+            #    We must interpolate T and qv to the staggered levels.
+            # 3. Calculate virtual temperature (tv_on_w).
+            # 4. Calculate density (rho_on_w) using ideal gas law (p / R*Tv).
+            # 5. Calculate omega = -w * g * rho (hydrostatic approximation).
+            # 6. Save this new variable as 'pressure_vertical_velocity'.
+            # ==================================================================
+            logger.info("Deriving pressure vertical velocity from geometric w.")
             w_geom_q = ds["w"].metpy.quantify()
             p_on_w_q = ds["pressure_on_w"].metpy.quantify()
             temp_mid_q = ds["temperature"].metpy.quantify()
             qv_mid_q = ds["qv"].metpy.quantify()
 
-            # Robust interpolation from cell centers to interfaces
+            # Interpolate T and qv from mid-levels to staggered levels
             temp_mid_vals = temp_mid_q.values
             qv_mid_vals = qv_mid_q.values
             temp_on_w_vals = np.zeros_like(w_geom_q.values)
@@ -411,6 +430,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 temp_mid_vals[:, :-1] + temp_mid_vals[:, 1:]
             )
             qv_on_w_vals[:, 1:-1] = 0.5 * (qv_mid_vals[:, :-1] + qv_mid_vals[:, 1:])
+            # Handle boundaries by persisting end-values
             temp_on_w_vals[:, 0] = temp_mid_vals[:, 0]
             temp_on_w_vals[:, -1] = temp_mid_vals[:, -1]
             qv_on_w_vals[:, 0] = qv_mid_vals[:, 0]
@@ -426,13 +446,15 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 * units.dimensionless
             )
 
+            # Calculate virtual temperature -> density -> omega
             tv_on_w = temp_on_w_da * (1 + 0.61 * qv_on_w_da)
             rho_on_w = p_on_w_q / (dry_air_gas_constant * tv_on_w)
-
             omega = -w_geom_q * g * rho_on_w
+
+            # Save the new variable with the name from get_derived_name
             ds["pressure_vertical_velocity"] = omega.metpy.convert_units("Pa/s")
 
-        # --- 8. Derive Mean Sea Level Pressure ---
+        # --- 8. Derive Mean Sea Level Pressure (Pa) ---
         if (
             "surface_pressure" in ds
             and "geopotential_at_surface" in ds
@@ -440,26 +462,32 @@ class MPASHybridLexicon(metaclass=LexiconType):
             and "temperature" in ds
             and "mean_sea_level_pressure" not in ds
         ):
-            logging.info(
-                "Deriving mean sea level pressure from sfc press, sfc geopotential, pressure, and temperature."
+            logger.info(
+                "Deriving mslp from sfc press, sfc geopotential, press, and temperature."
             )
             p_sfc_q = ds["surface_pressure"].metpy.quantify()
             z_sfc_q = ds["geopotential_at_surface"].metpy.quantify()
-            # Eqn (1) in FULL-POS in the IFS. https://www.umr-cnrm.fr/gmapdoc/IMG/pdf/ykfpos46t1r1.pdf
+            # FULL-POS in the IFS. https://www.umr-cnrm.fr/gmapdoc/IMG/pdf/ykfpos46t1r1.pdf
             gamma = xr.full_like(z_sfc_q, STANDARD_LAPSE_RATE * units.K / units.m)
             if (
                 ds["pressure"].isel(nVertLevels=0).mean()
                 < ds["pressure"].isel(nVertLevels=-1).mean()
             ):
-                logging.error(f'expected pressure in decreasing order {ds["pressure"]}')
+                raise ValueError(
+                    f'expected pressure in decreasing order {ds["pressure"]}'
+                )
+            # Le stands for (Le)vel number defined by variable NLEXTRAP in FULL-POS IFS code.
+            # This is the lowest level (with highest pressure).
             t_Le_q = ds["temperature"].isel(nVertLevels=0).metpy.quantify()
             p_Le_q = ds["pressure"].isel(nVertLevels=0).metpy.quantify()
+
             t_sfc_q = (
                 t_Le_q
                 + gamma * dry_air_gas_constant / g * (p_sfc_q / p_Le_q - 1) * t_Le_q
             )
             t_msl_q = t_sfc_q + gamma * z_sfc_q / g
 
+            # Apply temperature/lapse rate corrections
             T_THRESHOLD_1 = 290.5 * units.K
             T_THRESHOLD_2 = 255.0 * units.K
             cond1 = (t_msl_q > T_THRESHOLD_1) & (t_sfc_q <= T_THRESHOLD_1)
@@ -477,6 +505,10 @@ class MPASHybridLexicon(metaclass=LexiconType):
             p_msl = p_sfc_q * np.exp(
                 z_sfc_q / (dry_air_gas_constant * t_sfc_q) * (1 - x / 2 + (x**2) / 3)
             )
+            # Where surface geopotential is near zero, mean sea level pressure = surface pressure.
+            cond4 = abs(z_sfc_q) < 0.001 * units.J / units.kg
+            p_msl[cond4] = p_sfc_q[cond4]
+
             ds["mean_sea_level_pressure"] = p_msl
 
         return ds
