@@ -1,6 +1,7 @@
 # =============================================================================
 # Imports
 # =============================================================================
+import asyncio
 import dataclasses
 import datetime
 import logging
@@ -20,35 +21,46 @@ from earth2studio.lexicon.mpas import MPASLexicon
 # =============================================================================
 # Logging Configuration
 # =============================================================================
+# Use logging, consistent with the original mpas_ens.py
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
 # Main Data Source Class
 # =============================================================================
 @dataclasses.dataclass(unsafe_hash=True)
-class MPAS(DataSource):
+class MPASEnsemble(DataSource):
     """
     A custom earth2studio data source for loading, processing, and regridding
-    MPAS model output. This class handles the unstructured MPAS grid by
-    regridding it to a regular lat-lon grid using a nearest-neighbor approach
-    with a KDTree. It supports fetching data for multiple ensemble members.
+    MPAS model *ensemble* output. This class handles the unstructured MPAS grid
+    by regridding it to a regular lat-lon grid using a nearest-neighbor
+    approach with a KDTree. It supports fetching data for multiple ensemble members
+    at specific forecast hours.
 
-    Attributes:
-        data_dir (Path): Directory containing MPAS output files.
-        grid_path (Path): Path to the MPAS grid definition file.
-        cache_path (Path): Directory to store cached regridding indices.
+    Attributes
+    ----------
+    data_path : Path
+        The *base directory* containing MPAS output files. The class expects
+        a specific subdirectory structure, e.g.:
+        `{data_path}/{YYYYMMDDHH}/post/mem_{mem}/diag.{YYYY-MM-DD_HH.MM.SS}.nc`
+    grid_path : Path
+        Path to the MPAS grid definition file.
+    d_lon : float, optional
+        Target longitude spacing for regridding. Defaults to 0.25.
+    d_lat : float, optional
+        Target latitude spacing for regridding. Defaults to 0.25.
+    cache_path : Path, optional
+        Directory to store cached regridding indices.
     """
 
-    data_dir: Path
+    data_path: Path
     grid_path: Path
-    cache_path: Path = Path(datasource_cache_root()) / "mpas"
-
-    # Regridding parameters
     d_lon: float = 0.25
     d_lat: float = 0.25
+    cache_path: Path = Path(datasource_cache_root()) / "mpas_ensemble"
 
     def __post_init__(self) -> None:
         """
@@ -58,12 +70,30 @@ class MPAS(DataSource):
         self.lexicon = MPASLexicon
         self.cache_path.mkdir(parents=True, exist_ok=True)
 
-        # Define and store the target regular grid
-        self.target_lon = np.arange(0, 360, self.d_lon)
-        self.target_lat = np.arange(90, -90 - self.d_lat, -self.d_lat)
+        # Use np.linspace for robust grid generation (from mpas.py)
+        n_lon = int(360 / self.d_lon)
+        n_lat = int(180 / self.d_lat) + 1
+        self.target_lon = np.linspace(0, 360, n_lon, endpoint=False)
+        self.target_lat = np.linspace(90, -90, n_lat)
 
         # Compute or load regridding indices
         self.distance, self.indices = self._prepare_regridding_indices()
+
+        # Create a target index for xarray's advanced indexing (from mpas.py)
+        self.target_grid_index = xr.DataArray(
+            self.indices,
+            dims=["lat_lon"],
+            coords={
+                "lat": (
+                    "lat_lon",
+                    np.meshgrid(self.target_lon, self.target_lat)[1].ravel(),
+                ),
+                "lon": (
+                    "lat_lon",
+                    np.meshgrid(self.target_lon, self.target_lat)[0].ravel(),
+                ),
+            },
+        ).set_index(lat_lon=["lat", "lon"])
 
         # Load grid cell count to validate against data file
         with xr.open_dataset(self.grid_path) as grid_ds:
@@ -72,13 +102,16 @@ class MPAS(DataSource):
     # Regridding and Data Loading Methods
     def _prepare_regridding_indices(self) -> tuple[np.ndarray, np.ndarray]:
         """Calculates or loads cached nearest neighbor indices for regridding."""
-        cached_file = (self.cache_path / self.grid_path.name).with_suffix(".npz")
+        # Use cache file naming from mpas.py
+        cache_file_name = f"{self.grid_path.stem}_{self.d_lon}x{self.d_lat}.npz"
+        cached_file = self.cache_path / cache_file_name
+
         if cached_file.exists():
-            logging.info(f"Loading cached regridding indices from {cached_file}")
+            logger.info(f"Loading cached regridding indices from {cached_file}")
             data = np.load(cached_file)
             return data["dists"], data["inds"]
 
-        logging.info("Building KDTree from MPAS grid to compute regridding indices...")
+        logger.info("Building KDTree from MPAS grid to compute regridding indices...")
         with xr.open_dataset(self.grid_path) as grid:
             lon_cell = grid["lonCell"]
             lat_cell = grid["latCell"]
@@ -89,27 +122,27 @@ class MPAS(DataSource):
                 values = coord_da.values
 
                 if units in ["rad", "radians"]:
-                    logging.info(
+                    logger.info(
                         f"{coord_da.name} units are in radians. Using values directly."
                     )
                     return values
                 elif units in ["deg", "degrees"]:
-                    logging.info(
+                    logger.info(
                         f"{coord_da.name} units are in degrees. Converting to radians."
                     )
                     return np.deg2rad(values)
                 else:  # No units or unknown units
-                    logging.info(
+                    logger.info(
                         f"{coord_da.name} units are not specified. Inferring from value range."
                     )
                     # Check if any values fall outside the typical radian range
                     if np.any(np.abs(values) > 2 * np.pi):
-                        logging.info(
+                        logger.info(
                             "Values found outside [-2*pi, 2*pi]. Assuming degrees and converting."
                         )
                         return np.deg2rad(values)
                     else:
-                        logging.info(
+                        logger.info(
                             "Values are within [-2*pi, 2*pi]. Assuming radians."
                         )
                         return values
@@ -124,10 +157,10 @@ class MPAS(DataSource):
         target_xyz = self._lon_lat_to_cartesian(target_lon_rad, target_lat_rad)
 
         kdtree = KDTree(mpas_xyz)
-        logging.info("Querying tree to find nearest neighbors...")
+        logger.info("Querying tree to find nearest neighbors...")
         distance, indices = kdtree.query(target_xyz)
 
-        logging.info(f"Saving new regridding indices to {cached_file}")
+        logger.info(f"Saving new regridding indices to {cached_file}")
         np.savez_compressed(cached_file, dists=distance, inds=indices)
         return distance, indices
 
@@ -153,7 +186,7 @@ class MPAS(DataSource):
         """
         valid_time = itime + pd.Timedelta(hours=fhr)
         data_paths = [
-            self.data_dir
+            self.data_path
             / f"{itime.strftime('%Y%m%d%H')}/post/mem_{mem}/diag.{valid_time.strftime('%Y-%m-%d_%H.%M.%S')}.nc"
             for mem in members
         ]
@@ -169,9 +202,9 @@ class MPAS(DataSource):
 
         # Determine the required source variables from the requested variables
         source_variables = self.lexicon.required_variables(list(variables))
-        logging.info(f"Requesting source variables: {source_variables}")
+        logger.info(f"Requesting source variables: {source_variables}")
 
-        logging.info(f"Opening {len(existing_paths)} member files.")
+        logger.info(f"Opening {len(existing_paths)} member files.")
 
         def preprocess(ds: xr.Dataset) -> xr.Dataset:
             """
@@ -192,14 +225,13 @@ class MPAS(DataSource):
             # Derive the necessary variables from the filtered dataset
             ds_derived = self.lexicon.derive_variables(ds_filtered)
 
-            # Now, filter again to the final list of source variables (including derived ones)
+            # Now, filter again to the final list of source variables
             final_vars_to_keep = [
                 v for v in source_variables if v in ds_derived.data_vars
             ]
             return ds_derived[final_vars_to_keep]
 
-        # Open the dataset lazily; the preprocess function will efficiently
-        # derive and filter each file before they are combined.
+        # Open the dataset lazily
         ds_mpas = xr.open_mfdataset(
             existing_paths,
             combine="nested",
@@ -217,39 +249,38 @@ class MPAS(DataSource):
             )
 
         # Regrid the dataset
-        logging.info("Loading data into memory and regridding...")
+        logger.info("Loading data into memory and regridding...")
+        # Use the unstack method (from mpas.py)
         ds_regridded = self._regrid_dataset(ds_mpas.load())
-        logging.info("Regridding complete.")
+        logger.info("Regridding complete.")
         return ds_regridded
 
     def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
         """Remaps from the unstructured grid to a regular lat-lon grid."""
-        # Select data at the nearest neighbor indices and reshape
-        regridded_data = ds_mpas.isel(nCells=self.indices)
+        # Use the faster, cleaner isel/unstack method from mpas.py
+        regridded_da = ds_mpas.isel(nCells=self.target_grid_index)
+        return regridded_da.unstack("lat_lon")
 
-        # Determine the new shape for the lat/lon grid
-        new_shape = [
-            regridded_data.sizes[dim] for dim in regridded_data.dims if dim != "nCells"
-        ] + [len(self.target_lat), len(self.target_lon)]
+    def _finalize_dataset(
+        self,
+        ds_regridded: xr.Dataset,
+        variables: list[str],
+        time: datetime.datetime,
+        fhr: int,
+    ) -> xr.DataArray:
+        """Builds the final DataArray from a processed, regridded Dataset."""
+        # Map e2s variables to the source variable names from the lexicon
+        rename_dict = {self.lexicon[var]: var for var in variables}
 
-        # Create new coordinates, preserving existing ones (time, member, etc.)
-        new_coords = {
-            dim: coord
-            for dim, coord in regridded_data.coords.items()
-            if dim != "nCells"
-        }
-        new_coords["lat"] = self.target_lat
-        new_coords["lon"] = self.target_lon
+        # Select only the needed variables and rename them to e2s standard names
+        ds_final = ds_regridded[list(rename_dict.keys())].rename(rename_dict)
 
-        # Reshape each variable in the dataset
-        regridded_vars = {}
-        for var_name, da in regridded_data.data_vars.items():
-            reshaped_values = da.values.reshape(new_shape)
-            regridded_vars[var_name] = xr.DataArray(
-                reshaped_values, coords=new_coords, dims=da.dims[:-1] + ("lat", "lon")
-            )
+        # Add metadata for context
+        ds_final.attrs["initialization_time"] = str(time)
+        ds_final.attrs["forecast_hour"] = fhr
 
-        return xr.Dataset(regridded_vars, attrs=ds_mpas.attrs)
+        # Convert to a single DataArray with a 'variable' dimension
+        return ds_final.to_dataarray(dim="variable")
 
     async def __call__(
         self,
@@ -262,6 +293,9 @@ class MPAS(DataSource):
         """
         The main entry point for fetching data. It loads, processes, regrids,
         and returns the requested variables as an xarray.DataArray.
+
+        Note: This method is async and designed to be called by earth2studio's
+        async runners. It fetches data for a *single initialization time*.
 
         Parameters
         ----------
@@ -281,24 +315,18 @@ class MPAS(DataSource):
             lat-lon grid.
         """
         if members is None:
-            members = list(range(1, 11))
+            members_tuple = tuple(range(1, 11))
+        else:
+            members_tuple = tuple(sorted(members))
 
-        # Load and regrid the data for the given time/fhr/members
-        # The result is cached by the helper method.
         # Pass variables and members as tuples so they can be hashed for the cache.
-        ds_regridded = self._load_and_regrid(
-            time, fhr, tuple(sorted(variables)), tuple(sorted(members))
+        sorted_variables = tuple(sorted(variables))
+
+        # Run the synchronous, CPU/IO-bound load function in a separate thread
+        # This prevents it from blocking the asyncio event loop.
+        ds_regridded = await asyncio.to_thread(
+            self._load_and_regrid, time, fhr, sorted_variables, members_tuple
         )
 
-        # Map e2s variables to the source variable names from the lexicon
-        rename_dict = {self.lexicon[var]: var for var in variables}
-
-        # Select only the needed variables and rename them to e2s standard names
-        ds_final = ds_regridded[list(rename_dict.keys())].rename(rename_dict)
-
-        # Add metadata for context
-        ds_final.attrs["initialization_time"] = str(time)
-        ds_final.attrs["forecast_hour"] = fhr
-
-        # Convert to a single DataArray with a 'variable' dimension, as expected by e2s
-        return ds_final.to_dataarray(dim="variable")
+        # Finalize the dataset (renaming, attrs, to_dataarray)
+        return self._finalize_dataset(ds_regridded, variables, time, fhr)

@@ -346,20 +346,35 @@ class MPASHybrid(_MPASBase):
         """
 
         def vectorized_interp_core(
-            data: np.ndarray, pressure: np.ndarray, targets: np.ndarray
+            data: np.ndarray,
+            pressure: np.ndarray,
+            targets: np.ndarray,
+            interp_type: str = "linear",
         ) -> np.ndarray:
             """
             Core numpy-based interpolation function for apply_ufunc.
             data: (nVertLevels,)
             pressure: (nVertLevels,)
             targets: (level,)
+            interp_type: 'linear' or 'log'. Default is 'linear'.
             Returns: (level,)
             """
             # Ensure pressure is increasing
             if pressure[0] > pressure[-1]:
                 pressure = pressure[::-1]
                 data = data[::-1]
-            return np.interp(targets, pressure, data, left=np.nan, right=np.nan)
+
+            interp_x = pressure
+            interp_target_x = targets
+
+            if interp_type == "log":
+                # Transform pressure and targets to log-space
+                interp_x = np.log(pressure)
+                interp_target_x = np.log(targets)
+            elif interp_type != "linear":
+                raise ValueError(f"Unexpected interp_type {interp_type}")
+
+            return np.interp(interp_target_x, interp_x, data, left=np.nan, right=np.nan)
 
         vars_to_interp = {
             self.lexicon.get_derived_name(v)
@@ -389,12 +404,26 @@ class MPASHybrid(_MPASBase):
                 ) > pressure_field.isel({"nCells": 0, vert_dim: -1})
                 lowest_model_level = 0 if is_ascending else -1
 
+                # Select the interpolation function
+                if name in [
+                    "geopotential",
+                    "temperature",
+                    "uReconstructMeridional",
+                    "uReconstructZonal",
+                ]:
+                    logger.info(f"Using ln(p) interpolation for {name}")
+                    interp_kwargs = {"interp_type": "log"}
+                else:
+                    logger.info(f"Using linear p interpolation for {name}")
+                    interp_kwargs = {"interp_type": "linear"}
+
                 # 1. Perform vectorized interpolation
                 interp_da_nocoords = xr.apply_ufunc(
                     vectorized_interp_core,
                     da,
                     pressure_field,
                     target_levels_pa_da,  # Pass the 1D target levels
+                    kwargs=interp_kwargs,
                     input_core_dims=[[vert_dim], [vert_dim], ["level"]],
                     output_core_dims=[["level"]],  # Output has 'level' dim
                     exclude_dims={vert_dim, "level"},
