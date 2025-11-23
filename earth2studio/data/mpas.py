@@ -12,6 +12,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 from metpy.constants import dry_air_gas_constant, g
+from metpy.units import units
 from scipy.spatial import KDTree
 
 from earth2studio.data import DataSource
@@ -23,7 +24,7 @@ from earth2studio.utils.time import xtime
 # Constants
 # =============================================================================
 # Standard lapse rate in K/m for temperature extrapolation below ground.
-STANDARD_LAPSE_RATE = 0.0065
+STANDARD_LAPSE_RATE = -0.0065 * units.K / units.m
 
 
 # =============================================================================
@@ -374,6 +375,7 @@ class MPASHybrid(_MPASBase):
             elif interp_type != "linear":
                 raise ValueError(f"Unexpected interp_type {interp_type}")
 
+            # TODO: quadratic interpolation as in FULLPOS CY38
             return np.interp(interp_target_x, interp_x, data, left=np.nan, right=np.nan)
 
         vars_to_interp = {
@@ -404,10 +406,11 @@ class MPASHybrid(_MPASBase):
                 ) > pressure_field.isel({"nCells": 0, vert_dim: -1})
                 lowest_model_level = 0 if is_ascending else -1
 
-                # Select the interpolation function
+                # Select log or linear interpolation in pressure.
+                # log for geopotential and wind
+                # linear for temperature, moisture, etc.
                 if name in [
                     "geopotential",
-                    "temperature",
                     "uReconstructMeridional",
                     "uReconstructZonal",
                 ]:
@@ -439,27 +442,41 @@ class MPASHybrid(_MPASBase):
 
                 surface_pressure = ds["surface_pressure"]
 
-                # Prepare ratios needed for extrapolation formulas
-                p_ratio = target_levels_pa_da / surface_pressure
-                exponent = (
-                    dry_air_gas_constant.magnitude * STANDARD_LAPSE_RATE
-                ) / g.magnitude
+                # Eqn (3) in fullpos_cy38.pdf
+                # tentatively switched from target_levels_pa_da to press.isel(vert_dim=lowest_model_level) 11-23-2025
+                # target_levels_pa_da is a vector, but in the doc we use a scalar--the lowest model level
+                pi_L = pressure_field.isel(
+                    {vert_dim: lowest_model_level}
+                )  # matches Π (pi) with subscript L in documentation
+                ln_pressure_ratio = np.log(surface_pressure / pi_L)
+                y = STANDARD_LAPSE_RATE * dry_air_gas_constant / g * ln_pressure_ratio
 
                 if name == "temperature":
-                    # T(p) = t_sfc * (p / p_sfc) ^ (R_d * L / g)
-                    surface_temperature = ds["t2m"]
-                    extrap_values = surface_temperature * (p_ratio**exponent)
+                    surface_temperature = ds[
+                        "t2m"
+                    ]  # TODO: use Eqn (1) in fullpos_cy38.pdf
+                    extrap_values = surface_temperature * (
+                        1 + y + y**2 / 2 + y**3 / 6
+                    )  # Eqn. (2)
+                    # TODO: Use Eqns (2)-(5) to adjust for high topography
                     final_da = xr.where(
                         nan_mask, extrap_values.metpy.dequantify(), interp_da
                     )
 
                 elif name == "geopotential":
-                    surface_geopotential = ds["geopotential_at_surface"]
-                    surface_temperature = ds["t2m"]
-                    # phi(p) = phi_sfc + (g * T_sfc / L) * (1 - (p / p_sfc)^(R*L/g))
-                    extrap_values = surface_geopotential + (
-                        surface_temperature * g.magnitude / STANDARD_LAPSE_RATE
-                    ) * (1 - (p_ratio**exponent))
+                    surface_geopotential = ds[
+                        "geopotential_at_surface"
+                    ].metpy.quantify()
+                    surface_temperature = ds[
+                        "t2m"
+                    ].metpy.quantify()  # TODO: use Eqn (1) in fullpos_cy38.pdf as above
+                    extrap_values = (
+                        surface_geopotential
+                        - dry_air_gas_constant
+                        * surface_temperature
+                        * ln_pressure_ratio
+                        * (1 + y / 2 + y**2 / 6)
+                    )  # Eqn (6)
                     final_da = xr.where(
                         nan_mask, extrap_values.metpy.dequantify(), interp_da
                     )
