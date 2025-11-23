@@ -154,7 +154,7 @@ class _MPASBase(DataSource):
 # Pressure-Level Data Source
 # =============================================================================
 @dataclasses.dataclass(unsafe_hash=True)
-class MPAS(_MPASBase):
+class MPASPres(_MPASBase):
     """
     Custom data source for MPAS model output on pressure levels.
     """
@@ -346,7 +346,7 @@ class MPASHybrid(_MPASBase):
         below-terrain points by either persisting surface values or extrapolating.
         """
 
-        def vectorized_interp_core(
+        def vectorized_vinterp(
             data: np.ndarray,
             pressure: np.ndarray,
             targets: np.ndarray,
@@ -354,8 +354,8 @@ class MPASHybrid(_MPASBase):
         ) -> np.ndarray:
             """
             Core numpy-based interpolation function for apply_ufunc.
-            data: (nVertLevels,)
-            pressure: (nVertLevels,)
+            data: (vert_dim,)
+            pressure: (vert_dim,)
             targets: (level,)
             interp_type: 'linear' or 'log'. Default is 'linear'.
             Returns: (level,)
@@ -375,7 +375,7 @@ class MPASHybrid(_MPASBase):
             elif interp_type != "linear":
                 raise ValueError(f"Unexpected interp_type {interp_type}")
 
-            # TODO: quadratic interpolation as in FULLPOS CY38
+            # TODO: quadratic interpolation as in FULL-POS CY46T1R1 https://www.umr-cnrm.fr/gmapdoc/IMG/pdf/ykfpos46t1r1.pdf
             return np.interp(interp_target_x, interp_x, data, left=np.nan, right=np.nan)
 
         vars_to_interp = {
@@ -401,6 +401,7 @@ class MPASHybrid(_MPASBase):
                 logger.info(f"Interpolating variable: {name}")
                 pressure_field = ds["pressure"] if is_main else ds["pressure_on_w"]
                 vert_dim = "nVertLevels" if is_main else "nVertLevelsP1"
+                # is_ascending means level 0 is near sfc; last level (-1) is at top
                 is_ascending = pressure_field.isel(
                     {"nCells": 0, vert_dim: 0}
                 ) > pressure_field.isel({"nCells": 0, vert_dim: -1})
@@ -422,7 +423,7 @@ class MPASHybrid(_MPASBase):
 
                 # 1. Perform vectorized interpolation
                 interp_da_nocoords = xr.apply_ufunc(
-                    vectorized_interp_core,
+                    vectorized_vinterp,
                     da,
                     pressure_field,
                     target_levels_pa_da,  # Pass the 1D target levels
@@ -442,7 +443,7 @@ class MPASHybrid(_MPASBase):
 
                 surface_pressure = ds["surface_pressure"]
 
-                # Eqn (3) in fullpos_cy38.pdf
+                # Eqn (3) in FULL-POS CYCLE 46T1R1
                 # tentatively switched from target_levels_pa_da to press.isel(vert_dim=lowest_model_level) 11-23-2025
                 # target_levels_pa_da is a vector, but in the doc we use a scalar--the lowest model level
                 pi_L = pressure_field.isel(
@@ -454,7 +455,7 @@ class MPASHybrid(_MPASBase):
                 if name == "temperature":
                     surface_temperature = ds[
                         "t2m"
-                    ]  # TODO: use Eqn (1) in fullpos_cy38.pdf
+                    ]  # TODO: use Eqn (1) in fullpos_cy46.pdf
                     extrap_values = surface_temperature * (
                         1 + y + y**2 / 2 + y**3 / 6
                     )  # Eqn. (2)
@@ -469,7 +470,7 @@ class MPASHybrid(_MPASBase):
                     ].metpy.quantify()
                     surface_temperature = ds[
                         "t2m"
-                    ].metpy.quantify()  # TODO: use Eqn (1) in fullpos_cy38.pdf as above
+                    ].metpy.quantify()  # TODO: use Eqn (1) in fullpos_cy46.pdf as above
                     extrap_values = (
                         surface_geopotential
                         - dry_air_gas_constant

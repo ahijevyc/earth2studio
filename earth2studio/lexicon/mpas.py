@@ -9,6 +9,7 @@ import xarray as xr
 from loguru import logger
 from metpy.calc import mixing_ratio_from_relative_humidity
 from metpy.constants import (
+    Re,
     dry_air_gas_constant,
     dry_air_spec_heat_press,
     g,
@@ -21,6 +22,9 @@ from earth2studio.lexicon.base import LexiconType
 # =============================================================================
 # Constants
 # =============================================================================
+
+# TODO: use negative Quantity with units as in data/mpas.py following ECMWF FULLPOS convention
+# this code uses convention in Trenberth et al. assuming STANDARD_LAPSE_RATE is positive.
 # Standard lapse rate in K/m for temperature extrapolation below ground.
 STANDARD_LAPSE_RATE = 0.0065
 
@@ -224,7 +228,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
 
     @classmethod
     def get_item(cls, key: str) -> str:
-        """Provides a direct lookup, stripping pressure levels for hybrid data."""
+        """strip pressure level from key"""
         base_var = re.sub(r"\d+$", "", key)
         if base_var in cls._lexicon:
             return cls._lexicon[base_var]
@@ -244,7 +248,16 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 if var == "z":  # surface geopotential
                     required.add("ter")
                 elif var == "msl":  # mean sea level pressure
-                    required.update(["surface_pressure", "ter", "t2m"])
+                    required.update(
+                        [
+                            "pressure_base",
+                            "pressure_p",
+                            "surface_pressure",
+                            "theta",
+                            "ter",
+                            "t2m",
+                        ]
+                    )
                 elif var.startswith("tp"):
                     required.update(["rainc", "rainnc"])
                 else:  # Standard 2D vars: lsm, t2m, u10m, v10m
@@ -342,7 +355,9 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 coords=height_coords,
             )
             ds["height"] = height_da * units.m
-            ds["geopotential"] = ds["height"] * g
+            # geopotential_from_geometric_height in metview
+
+            ds["geopotential"] = ds["height"] * Re * g / (Re + ds["height"])
 
         # --- 4. Derive Pressure on the staggered 'w' grid ---
         if (
