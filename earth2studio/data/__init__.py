@@ -19,7 +19,7 @@ from .arco import ARCO
 from .base import DataSource, ForecastSource
 from .cbottle import CBottle3D
 from .cds import CDS
-from .cmip6 import CMIP6
+from .cmip6 import CMIP6, CMIP6MultiRealm
 from .const import Constant, Constant_FX
 from .ecmwf import AIFS, AIFS_ENS, IFS, IFS_ENS
 from .gefs import GEFS_FX, GEFS_FX_721x1440
@@ -28,7 +28,13 @@ from .goes import GOES
 from .hrrr import HRRR, HRRR_FX
 from .imerg import IMERG
 from .jpss import JPSS
+from .mrms import MRMS
 from .ncar import NCAR_ERA5
+from .planetary_computer import (
+    PlanetaryComputerMODISFire,
+    PlanetaryComputerOISST,
+    PlanetaryComputerSentinel3AOD,
+)
 from .rand import Random, Random_FX
 from .rx import CosineSolarZenith, LandSeaMask, SurfaceGeoPotential
 from .utils import datasource_to_file, fetch_data, prep_data_array
