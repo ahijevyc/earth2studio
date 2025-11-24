@@ -17,8 +17,7 @@ from scipy.spatial import KDTree
 
 from earth2studio.data import DataSource
 from earth2studio.data.utils import datasource_cache_root
-from earth2studio.lexicon.mpas import MPASHybridLexicon, MPASLexicon
-from earth2studio.utils.time import xtime
+from earth2studio.lexicon.mpas import MPASHybridLexicon, MPASLexicon, xtime
 
 # =============================================================================
 # Constants

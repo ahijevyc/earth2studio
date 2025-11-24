@@ -2,6 +2,8 @@
 # Imports
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 import re
+from datetime import datetime
+from pathlib import Path
 
 import metpy.xarray  # noqa: F401 (activates .metpy accessor)
 import numpy as np
@@ -527,3 +529,62 @@ class MPASHybridLexicon(metaclass=LexiconType):
             ds["mean_sea_level_pressure"] = p_msl
 
         return ds
+
+
+def xtime(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Decodes time variables from an MPAS file, calculates the forecast hour,
+    extracts the member ID, and assigns them as new coordinates or variables
+    in the xarray.Dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        The input dataset, typically from an MPAS output file. It is expected
+        to have 'initial_time' and 'xtime' variables as byte strings.
+
+    Returns
+    -------
+    xarray.Dataset
+        The dataset with added coordinates for 'initial_time', 'valid_time',
+        'mem' (if found), and a new data variable 'forecastHour'.
+    """
+
+    # --- Process Initial Time ---
+    logger.info("Decoding 'initial_time' variable.")
+    initial_time_str = ds["initial_time"].load().item().decode("utf-8").strip()
+    initial_time = datetime.strptime(initial_time_str, "%Y-%m-%d_%H:%M:%S")
+    # Assign as a scalar coordinate
+    ds = ds.expand_dims("initial_time").assign_coords(initial_time=[initial_time])
+
+    # --- Extract Member ID ---
+    if "source" in ds.encoding:
+        filename = Path(ds.encoding["source"])
+        mem_parts = [p for p in filename.parts if p.startswith("mem")]
+        if mem_parts:
+            mem_str = mem_parts[0].lstrip("mem_")
+            if mem_str.isdigit():
+                mem = int(mem_str)
+                # Assign member ID as a scalar coordinate
+                ds = ds.assign_coords(mem=mem)
+                logger.info(f"Found and assigned member ID: {mem}")
+
+    # --- Process Valid Time ---
+    logger.info("Decoding 'xtime' (valid time) variable.")
+
+    # Define a function that parses a single byte-string time
+    def parse_time(t_bytes: bytes) -> datetime:
+        return datetime.strptime(t_bytes.decode("utf-8").strip(), "%Y-%m-%d_%H:%M:%S")
+
+    parse_time_vec = np.vectorize(parse_time)
+    time_values = parse_time_vec(ds["xtime"].values).flatten()
+
+    # Assign the new datetime array/scalar as the 'time' coordinate.
+    ds = ds.assign_coords(time=("Time", time_values))
+
+    ds = ds.swap_dims({"Time": "time"})
+
+    # Drop the original, now redundant, variable
+    ds = ds.drop_vars(["xtime", "Time"], errors="ignore")
+
+    return ds
