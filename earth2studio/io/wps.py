@@ -51,7 +51,7 @@ class WPSBackend(IOBackend):
     def __init__(
         self,
         path: Path,
-        map_source: str = "earth2studio",
+        model_source: str = "earth2studio",
         static_fields: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -62,7 +62,7 @@ class WPSBackend(IOBackend):
         ----------
         path : Path
             The output directory where the final forecast file will be saved.
-        map_source : str, optional
+        model_source : str, optional
             The name of the source model, used for generating the output filename.
             Defaults to "earth2studio".
         static_fields : list[str], optional
@@ -72,7 +72,7 @@ class WPSBackend(IOBackend):
         """
         super().__init__()
         self.output_dir = path
-        self.map_source = map_source
+        self.model_source = model_source
         self.static_field_names = static_fields or []
         self.stored_static_data: xr.Dataset | None = None
         self.final_data_package: tuple | None = None
@@ -106,6 +106,10 @@ class WPSBackend(IOBackend):
                 [array_name] if isinstance(array_name, str) else array_name
             )
 
+            for static_field_name in self.static_field_names:
+                if static_field_name not in temp_array_name:
+                    raise KeyError(f"static field '{static_field_name}' not found")
+
             temp_processed_data = [
                 d.cpu().numpy() if hasattr(d, "cpu") else d for d in data_list
             ]
@@ -119,6 +123,7 @@ class WPSBackend(IOBackend):
             vars_to_keep = [
                 v for v in self.static_field_names if v in initial_ds.data_vars
             ]
+
             self.stored_static_data = initial_ds[vars_to_keep]
 
         # Always store the latest data package for the final forecast step
@@ -147,7 +152,7 @@ class WPSBackend(IOBackend):
             self.HEADER_FORMAT,
             hdate.ljust(24).encode("utf-8"),
             xfcst,
-            self.map_source.ljust(32).encode("utf-8"),
+            self.model_source.ljust(32).encode("utf-8"),
             field_name.ljust(9).encode("utf-8"),
             units.ljust(25).encode("utf-8"),
             desc.ljust(46).encode("utf-8"),
@@ -197,7 +202,7 @@ class WPSBackend(IOBackend):
         valid_time = pd.to_datetime(coords["time"][0])
 
         # --- Create dynamic filename ---
-        model_prefix = self.map_source.upper()[0:4]
+        model_prefix = self.model_source.upper()[0:4]
         time_str = valid_time.strftime("%Y-%m-%d_%H")
         filename = f"{model_prefix}:{time_str}"
         output_path = self.output_dir / filename
