@@ -447,7 +447,6 @@ class MPASHybrid(_MPASBase):
                 ln_pressure_ratio = np.log(target_levels_pa_da / surface_pressure)
                 alpha = STANDARD_LAPSE_RATE * dry_air_gas_constant / g
                 y = alpha * ln_pressure_ratio
-
                 if name == "temperature":
                     surface_temperature = ds["t2m"].metpy.quantify()
                     # Trenberth et al. Eqn (16-19)
@@ -461,16 +460,12 @@ class MPASHybrid(_MPASBase):
 
                     # Calculate Tpl (Plateau Temperature)
                     Tpl = xr.where(
-                        t_0 < 298 * units.K, xr.DataArray(298) * units.K, t_0
+                        t_0 >= 298 * units.K, xr.DataArray(298) * units.K, t_0
                     )  # Eqn (18)
 
                     # Update t_0 based on orography
-                    # In xarray, we calculate the formula for the *entire* grid, then select
-                    # the specific areas using xr.where. This handles alignment automatically.
-                    # Logic for medium orography formula (Eq 19b)
-                    # We compute this for the whole array; irrelevant pixels will be masked out later.
-                    # Had to divide by meters to get correct units.
-                    t_0_medium_calc = (
+                    # medium orography formula (Eq 19b)
+                    t_0_medium_orog = (
                         0.002
                         / units.m
                         * (
@@ -479,35 +474,71 @@ class MPASHybrid(_MPASBase):
                         )
                     )
 
-                    # Apply high_orog logic first
-                    t_0_new = xr.where(high_orog, Tpl, t_0)
+                    t_0 = xr.where(high_orog, Tpl, t_0)  # Eqn (18)
+                    t_0 = xr.where(medium_orog, t_0_medium_orog, t_0)  # Eqn (19b)
 
-                    # Apply medium_orog logic (overwriting the result of the previous step)
-                    t_0_new = xr.where(medium_orog, t_0_medium_calc, t_0_new)
-
-                    # Calculate alpha (Eq 17)
-                    alpha_calc = (
+                    # Calculate alpha_orog (Eq 17)
+                    alpha_orog = (
                         dry_air_gas_constant
-                        * (t_0_new - surface_temperature)
+                        * (t_0 - surface_temperature)
                         / ds["geopotential_at_surface"].metpy.quantify()
                     )
 
-                    # Apply the calculated alpha where 'orog' is True, keep original alpha elsewhere
-                    alpha_final = xr.where(orog, alpha_calc, alpha)
+                    # Apply alpha_orog where 'orog' is True, keep original alpha elsewhere
+                    alpha = xr.where(orog, alpha_orog, alpha)
+
+                    # Line after Eqn (19b) if t_0 < surface_temperature set alpha to zero.
+                    alpha = xr.where(t_0 < surface_temperature, xr.DataArray(0), alpha)
 
                     # Final Extrapolation (Eq 16)
-                    y = alpha_final * ln_pressure_ratio
+                    y = alpha * ln_pressure_ratio
                     extrap_values = surface_temperature * (1 + y + y**2 / 2 + y**3 / 6)
 
                     # Final Merge
                     final_da = xr.where(
                         nan_mask, extrap_values.metpy.dequantify(), interp_da
                     )
+
                 elif name == "geopotential":
                     surface_geopotential = ds[
                         "geopotential_at_surface"
                     ].metpy.quantify()
                     surface_temperature = ds["t2m"].metpy.quantify()
+                    low_temp = (
+                        surface_temperature < 255 * units.K
+                    )  # Eqn (14.3) Trenberth says "below ground geopotential is treated as for mslp".
+                    t_0 = (
+                        surface_temperature
+                        + STANDARD_LAPSE_RATE * surface_geopotential / g
+                    )  # Eqn (13) temperature at zero geopotential (msl)
+                    high_temp = (surface_temperature > 290.5 * units.K) & (
+                        t_0 > 290.5 * units.K
+                    )
+
+                    # Calculate reduced alpha Eqn (14.1)
+                    alpha_reduced = (
+                        dry_air_gas_constant
+                        / surface_geopotential
+                        * (290.5 * units.K - surface_temperature)
+                    )
+                    mask = (surface_temperature <= 290.5 * units.K) & (
+                        t_0 > 290.5 * units.K
+                    )
+                    alpha = xr.where(mask, alpha_reduced, alpha)  # line before Eqn (13)
+
+                    alpha = xr.where(
+                        high_temp, xr.DataArray(0), alpha
+                    )  # line before Eqn (14.2)
+                    surface_temperature = xr.where(
+                        high_temp,
+                        (surface_temperature + 290.5 * units.K) / 2,
+                        surface_temperature,
+                    )  # line before Eqn (14.2)
+                    surface_temperature = xr.where(
+                        low_temp,
+                        (surface_temperature + 255 * units.K) / 2,
+                        surface_temperature,
+                    )  # line before Eqn (14.3)
                     # Trenberth et al. Eqn. (15)
                     extrap_values = (
                         surface_geopotential
