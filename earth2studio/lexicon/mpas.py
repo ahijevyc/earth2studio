@@ -25,8 +25,7 @@ from earth2studio.lexicon.base import LexiconType
 # Constants
 # =============================================================================
 
-# TODO: use negative Quantity with units as in data/mpas.py following ECMWF FULLPOS convention
-# this code uses convention in Trenberth et al. assuming STANDARD_LAPSE_RATE is positive.
+# This code uses convention in Trenberth et al. assuming STANDARD_LAPSE_RATE is positive.
 # Standard lapse rate in K/m for temperature extrapolation below ground.
 STANDARD_LAPSE_RATE = 0.0065
 
@@ -222,6 +221,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
         "v": "uReconstructMeridional",
         "w": "w",
         "lsm": "landmask",
+        "sp": "surface_pressure",
         "t2m": "t2m",
         "u10m": "u10",
         "v10m": "v10",
@@ -485,6 +485,8 @@ class MPASHybridLexicon(metaclass=LexiconType):
             p_sfc_q = ds["surface_pressure"].metpy.quantify()
             z_sfc_q = ds["geopotential_at_surface"].metpy.quantify()
             # FULL-POS in the IFS. https://www.umr-cnrm.fr/gmapdoc/IMG/pdf/ykfpos46t1r1.pdf
+            # gamma may take multiple values, depending on the surface condition, so
+            # it can't be a scalar constant.
             gamma = xr.full_like(z_sfc_q, STANDARD_LAPSE_RATE * units.K / units.m)
             if (
                 ds["pressure"].isel(nVertLevels=0).mean()
@@ -502,7 +504,9 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 t_Le_q
                 + gamma * dry_air_gas_constant / g * (p_sfc_q / p_Le_q - 1) * t_Le_q
             )
-            t_msl_q = t_sfc_q + gamma * z_sfc_q / g
+            t_msl_q = (
+                t_sfc_q + gamma * z_sfc_q / g
+            )  # temperature at msl (zero geopotential)
 
             # Apply temperature/lapse rate corrections
             T_THRESHOLD_1 = 290.5 * units.K

@@ -23,7 +23,7 @@ from earth2studio.lexicon.mpas import MPASHybridLexicon, MPASLexicon, xtime
 # Constants
 # =============================================================================
 # Standard lapse rate in K/m for temperature extrapolation below ground.
-STANDARD_LAPSE_RATE = -0.0065 * units.K / units.m
+STANDARD_LAPSE_RATE = 0.0065 * units.K / units.m
 
 
 # =============================================================================
@@ -77,18 +77,13 @@ class _MPASBase(DataSource):
         self.distance, self.indices = self._prepare_regridding_indices()
 
         # Create a target index for xarray's advanced indexing
+        target_lon_grid, target_lat_grid = np.meshgrid(self.target_lon, self.target_lat)
         self.target_grid_index = xr.DataArray(
             self.indices,
             dims=["lat_lon"],
             coords={
-                "lat": (
-                    "lat_lon",
-                    np.meshgrid(self.target_lon, self.target_lat)[1].ravel(),
-                ),
-                "lon": (
-                    "lat_lon",
-                    np.meshgrid(self.target_lon, self.target_lat)[0].ravel(),
-                ),
+                "lat": ("lat_lon", target_lat_grid.ravel()),
+                "lon": ("lat_lon", target_lon_grid.ravel()),
             },
         ).set_index(lat_lon=["lat", "lon"])
 
@@ -442,41 +437,85 @@ class MPASHybrid(_MPASBase):
 
                 surface_pressure = ds["surface_pressure"]
 
-                # Eqn (3) in FULL-POS CYCLE 46T1R1
-                # tentatively switched from target_levels_pa_da to press.isel(vert_dim=lowest_model_level) 11-23-2025
-                # target_levels_pa_da is a vector, but in the doc we use a scalar--the lowest model level
-                pi_L = pressure_field.isel(
-                    {vert_dim: lowest_model_level}
-                )  # matches Π (pi) with subscript L in documentation
-                ln_pressure_ratio = np.log(surface_pressure / pi_L)
-                y = STANDARD_LAPSE_RATE * dry_air_gas_constant / g * ln_pressure_ratio
+                # Considered FULL-POS CYCLE 46T1R1
+                # But there seems to be an error in geopotential extrapolation below surface.
+                # It seems to work if you flip the pressures inside the logarithm.
+                # Or maybe pi_L is not what I think. Is it any layer in target layers or
+                # just the bottom layer? Plus, getting surface temperature in high topography is hard (Eqn (2)-(5)).
+
+                # Follow Trenberth Eqn (15) The order of pressures inside the logarithm make sense.
+                ln_pressure_ratio = np.log(target_levels_pa_da / surface_pressure)
+                alpha = STANDARD_LAPSE_RATE * dry_air_gas_constant / g
+                y = alpha * ln_pressure_ratio
 
                 if name == "temperature":
-                    surface_temperature = ds[
-                        "t2m"
-                    ]  # TODO: use Eqn (1) in fullpos_cy46.pdf
-                    extrap_values = surface_temperature * (
-                        1 + y + y**2 / 2 + y**3 / 6
-                    )  # Eqn. (2)
-                    # TODO: Use Eqns (2)-(5) to adjust for high topography
+                    surface_temperature = ds["t2m"].metpy.quantify()
+                    # Trenberth et al. Eqn (16-19)
+                    surface_height = ds["geopotential_at_surface"].metpy.quantify() / g
+                    t_0 = surface_temperature + surface_height * STANDARD_LAPSE_RATE
+                    orog = surface_height >= 2000 * units.m
+                    medium_orog = (surface_height >= 2000 * units.m) & (
+                        surface_height <= 2500 * units.m
+                    )
+                    high_orog = surface_height > 2500 * units.m
+
+                    # Calculate Tpl (Plateau Temperature)
+                    Tpl = xr.where(
+                        t_0 < 298 * units.K, xr.DataArray(298) * units.K, t_0
+                    )  # Eqn (18)
+
+                    # Update t_0 based on orography
+                    # In xarray, we calculate the formula for the *entire* grid, then select
+                    # the specific areas using xr.where. This handles alignment automatically.
+                    # Logic for medium orography formula (Eq 19b)
+                    # We compute this for the whole array; irrelevant pixels will be masked out later.
+                    # Had to divide by meters to get correct units.
+                    t_0_medium_calc = (
+                        0.002
+                        / units.m
+                        * (
+                            (2500 * units.m - surface_height) * t_0
+                            + (surface_height - 2000 * units.m) * Tpl
+                        )
+                    )
+
+                    # Apply high_orog logic first
+                    t_0_new = xr.where(high_orog, Tpl, t_0)
+
+                    # Apply medium_orog logic (overwriting the result of the previous step)
+                    t_0_new = xr.where(medium_orog, t_0_medium_calc, t_0_new)
+
+                    # Calculate alpha (Eq 17)
+                    alpha_calc = (
+                        dry_air_gas_constant
+                        * (t_0_new - surface_temperature)
+                        / ds["geopotential_at_surface"].metpy.quantify()
+                    )
+
+                    # Apply the calculated alpha where 'orog' is True, keep original alpha elsewhere
+                    alpha_final = xr.where(orog, alpha_calc, alpha)
+
+                    # Final Extrapolation (Eq 16)
+                    y = alpha_final * ln_pressure_ratio
+                    extrap_values = surface_temperature * (1 + y + y**2 / 2 + y**3 / 6)
+
+                    # Final Merge
                     final_da = xr.where(
                         nan_mask, extrap_values.metpy.dequantify(), interp_da
                     )
-
                 elif name == "geopotential":
                     surface_geopotential = ds[
                         "geopotential_at_surface"
                     ].metpy.quantify()
-                    surface_temperature = ds[
-                        "t2m"
-                    ].metpy.quantify()  # TODO: use Eqn (1) in fullpos_cy46.pdf as above
+                    surface_temperature = ds["t2m"].metpy.quantify()
+                    # Trenberth et al. Eqn. (15)
                     extrap_values = (
                         surface_geopotential
                         - dry_air_gas_constant
                         * surface_temperature
                         * ln_pressure_ratio
                         * (1 + y / 2 + y**2 / 6)
-                    )  # Eqn (6)
+                    )
                     final_da = xr.where(
                         nan_mask, extrap_values.metpy.dequantify(), interp_da
                     )
