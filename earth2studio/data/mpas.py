@@ -448,7 +448,7 @@ class MPASHybrid(_MPASBase):
                 alpha = STANDARD_LAPSE_RATE * dry_air_gas_constant / g
                 y = alpha * ln_pressure_ratio
                 if name == "temperature":
-                    surface_temperature = ds["t2m"].metpy.quantify()
+                    surface_temperature = ds["surface_temperature"].metpy.quantify()
                     # Trenberth et al. Eqn (16-19)
                     surface_height = ds["geopotential_at_surface"].metpy.quantify() / g
                     t_0 = surface_temperature + surface_height * STANDARD_LAPSE_RATE
@@ -503,7 +503,7 @@ class MPASHybrid(_MPASBase):
                     surface_geopotential = ds[
                         "geopotential_at_surface"
                     ].metpy.quantify()
-                    surface_temperature = ds["t2m"].metpy.quantify()
+                    surface_temperature = ds["surface_temperature"].metpy.quantify()
                     low_temp = (
                         surface_temperature < 255 * units.K
                     )  # Eqn (14.3) Trenberth says "below ground geopotential is treated as for mslp".

@@ -222,6 +222,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
         "w": "w",
         "lsm": "landmask",
         "sp": "surface_pressure",
+        "surface_temperature": "surface_temperature",
         "t2m": "t2m",
         "u10m": "u10",
         "v10m": "v10",
@@ -276,6 +277,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
             required.update(["pressure_p", "pressure_base"])
             # needed to interpolate below surface (in MPASHybrid DataSource).
             required.add("surface_pressure")
+            required.add("surface_temperature")
             if base_var in ["t", "z"]:
                 # to interpolate geopotential below surface (in MPASHybrid DataSource).
                 required.add("t2m")
@@ -504,6 +506,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 t_Le_q
                 + gamma * dry_air_gas_constant / g * (p_sfc_q / p_Le_q - 1) * t_Le_q
             )
+            ds["surface_temperature"] = t_sfc_q
             t_msl_q = (
                 t_sfc_q + gamma * z_sfc_q / g
             )  # temperature at msl (zero geopotential)
