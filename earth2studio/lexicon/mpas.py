@@ -80,6 +80,8 @@ class MPASLexicon(metaclass=LexiconType):
         "u10m": "u10",
         "v10m": "v10",
         "msl": "mslp",  # Mean sea level pressure
+        "surface_temperature": "temperature_surface",
+        "sp": "surface_pressure",
     }
 
     @classmethod

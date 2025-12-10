@@ -135,6 +135,14 @@ class _MPASBase(DataSource):
         np.savez_compressed(cached_file, dists=distance, inds=indices)
         return distance, indices
 
+    def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
+        """Remaps from the unstructured grid to a regular lat-lon grid."""
+        # Select the cells at the target grid points
+        # This creates a 1D array with a multi-index (lat, lon)
+        regridded_da = ds_mpas.isel(nCells=self.target_grid_index)
+        # Unstack the 1D array into a 2D (or 3D) grid
+        return regridded_da.unstack("lat_lon")
+
     @staticmethod
     def _lon_lat_to_cartesian(lon_rad: np.ndarray, lat_rad: np.ndarray) -> np.ndarray:
         """Converts lon/lat (radians) to 3D Cartesian coords for KDTree."""
@@ -204,14 +212,6 @@ class MPASPres(_MPASBase):
         ds_regridded = self._regrid_dataset(ds_processed)
         logger.info("Regridding complete.")
         return ds_regridded
-
-    def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
-        """Remaps from the unstructured grid to a regular lat-lon grid."""
-        # Select the cells at the target grid points
-        # This creates a 1D array with a multi-index (lat, lon)
-        regridded_da = ds_mpas.isel(nCells=self.target_grid_index)
-        # Unstack the 1D array into a 2D (or 3D) grid
-        return regridded_da.unstack("lat_lon")
 
     def _finalize_dataset(
         self, ds_regridded: xr.Dataset, variables: list[str]
@@ -566,14 +566,6 @@ class MPASHybrid(_MPASBase):
 
         interp_ds = xr.Dataset(interpolated_vars, attrs=ds.attrs)
         return interp_ds
-
-    def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
-        """Remaps from the unstructured grid to a regular lat-lon grid."""
-        # Select the cells at the target grid points
-        # This creates a 1D array with a multi-index (lat, lon)
-        regridded_da = ds_mpas.isel(nCells=self.target_grid_index)
-        # Unstack the 1D array into a 2D (or 3D) grid
-        return regridded_da.unstack("lat_lon")
 
     def _finalize_dataset(
         self, ds_regridded: xr.Dataset, variables: list[str]

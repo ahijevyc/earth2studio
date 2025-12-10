@@ -1,10 +1,8 @@
 # =============================================================================
 # Imports
 # =============================================================================
-import asyncio
-import dataclasses
 import datetime
-import logging
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -12,27 +10,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
-from scipy.spatial import KDTree
+from loguru import logger
 
-from earth2studio.data import DataSource
+from earth2studio.data.mpas import _MPASBase
 from earth2studio.data.utils import datasource_cache_root
 from earth2studio.lexicon.mpas import MPASLexicon
 
-# =============================================================================
-# Logging Configuration
-# =============================================================================
-# Use logging, consistent with the original mpas_ens.py
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
 
-
-# =============================================================================
-# Main Data Source Class
-# =============================================================================
-@dataclasses.dataclass(unsafe_hash=True)
-class MPASEnsemble(DataSource):
+class MPASEnsemble(_MPASBase):
     """
     A custom earth2studio data source for loading, processing, and regridding
     MPAS model *ensemble* output. This class handles the unstructured MPAS grid
@@ -42,135 +27,28 @@ class MPASEnsemble(DataSource):
 
     Attributes
     ----------
-    data_path : Path
+    data_path : str
         The *base directory* containing MPAS output files. The class expects
         a specific subdirectory structure, e.g.:
         `{data_path}/{YYYYMMDDHH}/post/mem_{mem}/diag.{YYYY-MM-DD_HH.MM.SS}.nc`
     grid_path : Path
-        Path to the MPAS grid definition file.
+        The path to the static MPAS grid definition file.
     d_lon : float, optional
         Target longitude spacing for regridding. Defaults to 0.25.
     d_lat : float, optional
         Target latitude spacing for regridding. Defaults to 0.25.
     cache_path : Path, optional
-        Directory to store cached regridding indices.
+        The directory to store cached regridding indices.
     """
 
-    data_path: Path
     grid_path: Path
     d_lon: float = 0.25
     d_lat: float = 0.25
     cache_path: Path = Path(datasource_cache_root()) / "mpas_ensemble"
 
     def __post_init__(self) -> None:
-        """
-        Post-initialization to prepare the target grid and compute or load the
-        regridding indices from the cache.
-        """
+        super().__post_init__()
         self.lexicon = MPASLexicon
-        self.cache_path.mkdir(parents=True, exist_ok=True)
-
-        # Use np.linspace for robust grid generation (from mpas.py)
-        n_lon = int(360 / self.d_lon)
-        n_lat = int(180 / self.d_lat) + 1
-        self.target_lon = np.linspace(0, 360, n_lon, endpoint=False)
-        self.target_lat = np.linspace(90, -90, n_lat)
-
-        # Compute or load regridding indices
-        self.distance, self.indices = self._prepare_regridding_indices()
-
-        # Create a target index for xarray's advanced indexing (from mpas.py)
-        self.target_grid_index = xr.DataArray(
-            self.indices,
-            dims=["lat_lon"],
-            coords={
-                "lat": (
-                    "lat_lon",
-                    np.meshgrid(self.target_lon, self.target_lat)[1].ravel(),
-                ),
-                "lon": (
-                    "lat_lon",
-                    np.meshgrid(self.target_lon, self.target_lat)[0].ravel(),
-                ),
-            },
-        ).set_index(lat_lon=["lat", "lon"])
-
-        # Load grid cell count to validate against data file
-        with xr.open_dataset(self.grid_path) as grid_ds:
-            self.grid_ncells = grid_ds.sizes["nCells"]
-
-    # Regridding and Data Loading Methods
-    def _prepare_regridding_indices(self) -> tuple[np.ndarray, np.ndarray]:
-        """Calculates or loads cached nearest neighbor indices for regridding."""
-        # Use cache file naming from mpas.py
-        cache_file_name = f"{self.grid_path.stem}_{self.d_lon}x{self.d_lat}.npz"
-        cached_file = self.cache_path / cache_file_name
-
-        if cached_file.exists():
-            logger.info(f"Loading cached regridding indices from {cached_file}")
-            data = np.load(cached_file)
-            return data["dists"], data["inds"]
-
-        logger.info("Building KDTree from MPAS grid to compute regridding indices...")
-        with xr.open_dataset(self.grid_path) as grid:
-            lon_cell = grid["lonCell"]
-            lat_cell = grid["latCell"]
-
-            # Function to determine units and convert to radians if needed
-            def process_coords(coord_da: xr.DataArray) -> np.ndarray:
-                units = coord_da.attrs.get("units", "unknown").lower()
-                values = coord_da.values
-
-                if units in ["rad", "radians"]:
-                    logger.info(
-                        f"{coord_da.name} units are in radians. Using values directly."
-                    )
-                    return values
-                elif units in ["deg", "degrees"]:
-                    logger.info(
-                        f"{coord_da.name} units are in degrees. Converting to radians."
-                    )
-                    return np.deg2rad(values)
-                else:  # No units or unknown units
-                    logger.info(
-                        f"{coord_da.name} units are not specified. Inferring from value range."
-                    )
-                    # Check if any values fall outside the typical radian range
-                    if np.any(np.abs(values) > 2 * np.pi):
-                        logger.info(
-                            "Values found outside [-2*pi, 2*pi]. Assuming degrees and converting."
-                        )
-                        return np.deg2rad(values)
-                    else:
-                        logger.info(
-                            "Values are within [-2*pi, 2*pi]. Assuming radians."
-                        )
-                        return values
-
-            mpas_lon_rad = process_coords(lon_cell)
-            mpas_lat_rad = process_coords(lat_cell)
-            mpas_xyz = self._lon_lat_to_cartesian(mpas_lon_rad, mpas_lat_rad)
-
-        target_lon_grid, target_lat_grid = np.meshgrid(self.target_lon, self.target_lat)
-        target_lon_rad = np.deg2rad(target_lon_grid.ravel())
-        target_lat_rad = np.deg2rad(target_lat_grid.ravel())
-        target_xyz = self._lon_lat_to_cartesian(target_lon_rad, target_lat_rad)
-
-        kdtree = KDTree(mpas_xyz)
-        logger.info("Querying tree to find nearest neighbors...")
-        distance, indices = kdtree.query(target_xyz)
-
-        logger.info(f"Saving new regridding indices to {cached_file}")
-        np.savez_compressed(cached_file, dists=distance, inds=indices)
-        return distance, indices
-
-    @staticmethod
-    def _lon_lat_to_cartesian(lon_rad: np.ndarray, lat_rad: np.ndarray) -> np.ndarray:
-        """Converts lon/lat (radians) to 3D Cartesian coords for KDTree."""
-        x = np.cos(lat_rad) * np.cos(lon_rad)
-        y = np.cos(lat_rad) * np.sin(lon_rad)
-        z = np.sin(lat_rad)
-        return np.array([x, y, z]).T
 
     @lru_cache(maxsize=16)
     def _load_and_regrid(
@@ -184,14 +62,16 @@ class MPASEnsemble(DataSource):
         Loads data for a given initialization time, forecast hour, and member set,
         then regrids it. Caches the result to avoid redundant I/O and computation.
         """
+        # Ensure itime is a pandas Timestamp for arithmetic and consistent formatting
+        itime = pd.to_datetime(itime)
         valid_time = itime + pd.Timedelta(hours=fhr)
+
         data_paths = [
-            self.data_path
-            / f"{itime.strftime('%Y%m%d%H')}/post/mem_{mem}/diag.{valid_time.strftime('%Y-%m-%d_%H.%M.%S')}.nc"
+            f"{self.data_path}/{itime.strftime('%Y%m%d%H')}/post/mem_{mem}/diag.{valid_time.strftime('%Y-%m-%d_%H.%M.%S')}.nc"
             for mem in members
         ]
 
-        existing_paths = [p for p in data_paths if p.exists()]
+        existing_paths = [p for p in data_paths if os.path.exists(p)]
         if not existing_paths:
             # Create a formatted string of attempted paths for the error message
             attempted_paths_str = "\n".join(map(str, data_paths))
@@ -249,17 +129,17 @@ class MPASEnsemble(DataSource):
             )
 
         # Regrid the dataset
-        logger.info("Loading data into memory and regridding...")
-        # Use the unstack method (from mpas.py)
-        ds_regridded = self._regrid_dataset(ds_mpas.load())
+        logger.info("Regridding dataset (lazy)...")
+        # Do NOT load before regridding. Regrid first (reduces size), then compute.
+        ds_regridded = self._regrid_dataset(ds_mpas)
+
+        logger.info("Computing/Loading regridded data into memory...")
+        # Now we trigger the computation. This pulls only the necessary data points
+        # from the source files to fill the target grid, rather than reading everything.
+        ds_regridded = ds_regridded.compute()
+
         logger.info("Regridding complete.")
         return ds_regridded
-
-    def _regrid_dataset(self, ds_mpas: xr.Dataset) -> xr.Dataset:
-        """Remaps from the unstructured grid to a regular lat-lon grid."""
-        # Use the faster, cleaner isel/unstack method from mpas.py
-        regridded_da = ds_mpas.isel(nCells=self.target_grid_index)
-        return regridded_da.unstack("lat_lon")
 
     def _finalize_dataset(
         self,
@@ -270,7 +150,7 @@ class MPASEnsemble(DataSource):
     ) -> xr.DataArray:
         """Builds the final DataArray from a processed, regridded Dataset."""
         # Map e2s variables to the source variable names from the lexicon
-        rename_dict = {self.lexicon[var]: var for var in variables}
+        rename_dict = {self.lexicon.get_item(var): var for var in variables}
 
         # Select only the needed variables and rename them to e2s standard names
         ds_final = ds_regridded[list(rename_dict.keys())].rename(rename_dict)
@@ -282,9 +162,9 @@ class MPASEnsemble(DataSource):
         # Convert to a single DataArray with a 'variable' dimension
         return ds_final.to_dataarray(dim="variable")
 
-    async def __call__(
+    def __call__(
         self,
-        time: datetime.datetime,
+        time: datetime.datetime | list[datetime.datetime] | np.ndarray,
         variables: list[str],
         *,
         fhr: int = 0,
@@ -299,8 +179,8 @@ class MPASEnsemble(DataSource):
 
         Parameters
         ----------
-        time : datetime.datetime
-            The initialization time of the forecast.
+        time : datetime.datetime | list[datetime.datetime] | np.ndarray
+            The initialization time(s) of the forecast.
         variables : List[str]
             A list of standardized variable names to fetch.
         fhr : int, optional
@@ -322,11 +202,18 @@ class MPASEnsemble(DataSource):
         # Pass variables and members as tuples so they can be hashed for the cache.
         sorted_variables = tuple(sorted(variables))
 
-        # Run the synchronous, CPU/IO-bound load function in a separate thread
-        # This prevents it from blocking the asyncio event loop.
-        ds_regridded = await asyncio.to_thread(
-            self._load_and_regrid, time, fhr, sorted_variables, members_tuple
-        )
+        if isinstance(time, (datetime.datetime, np.datetime64)):
+            ds = self._load_and_regrid(time, fhr, sorted_variables, members_tuple)
+            return self._finalize_dataset(ds, variables, time, fhr)
+        else:
+            results = []
+            for t in time:
+                ds = self._load_and_regrid(t, fhr, sorted_variables, members_tuple)
+                da = self._finalize_dataset(ds, variables, t, fhr)
+                da = da.assign_coords(time=t).expand_dims("time")
+                results.append(da)
 
-        # Finalize the dataset (renaming, attrs, to_dataarray)
-        return self._finalize_dataset(ds_regridded, variables, time, fhr)
+        if not results:
+            return xr.DataArray()
+
+        return xr.concat(results, dim="time")
