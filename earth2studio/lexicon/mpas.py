@@ -105,6 +105,8 @@ class MPASLexicon(metaclass=LexiconType):
                 return f"uzonal_{target_level}hPa"
             elif var_type == "v":
                 return f"umeridional_{target_level}hPa"
+            elif var_type == "w":
+                return f"w_{target_level}hPa"
             elif var_type in ["q", "r"]:  # Support for humidity types
                 return f"mixing_ratio_{target_level}hPa"
 
@@ -199,8 +201,10 @@ class MPASLexicon(metaclass=LexiconType):
                 mixing_ratio = mixing_ratio_from_relative_humidity(
                     pressure_hpa, temperature_k, relative_humidity
                 )
-                # Keep the result as a unit-aware DataArray
-                ds[q_var] = mixing_ratio
+                # Used to say to keep the result as a unit-aware DataArray.
+                # But other variables are dequantified and TypeError: Mixing chunked array
+                # types is not supported in dask.
+                ds[q_var] = mixing_ratio.metpy.dequantify()
 
         return ds
 
