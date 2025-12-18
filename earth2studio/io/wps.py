@@ -13,6 +13,7 @@ import xarray as xr
 from loguru import logger
 from metpy.constants import g
 
+from earth2studio.data import LandSeaMask, SurfaceGeoPotential
 from earth2studio.io import IOBackend
 
 
@@ -22,8 +23,8 @@ from earth2studio.io import IOBackend
 class WPSBackend(IOBackend):
     """
     An IOBackend that writes the final time step of a forecast to a dynamically
-    named WPS intermediate binary file. It can propagate static fields from the
-    initial time step to the final output.
+    named WPS intermediate binary file. It also writes landseamask and surface height
+    to the final output.
     """
 
     VARIABLE_MAP = {
@@ -65,16 +66,10 @@ class WPSBackend(IOBackend):
         model_source : str, optional
             The name of the source model, used for generating the output filename.
             Defaults to "earth2studio".
-        static_fields : list[str], optional
-            A list of variable names to treat as static. The data for these
-            fields will be taken from the first forecast step and propagated to
-            the final output.
         """
         super().__init__()
         self.output_dir = path
         self.model_source = model_source
-        self.static_field_names = static_fields or []
-        self.stored_static_data: xr.Dataset | None = None
         self.final_data_package: tuple | None = None
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -93,39 +88,8 @@ class WPSBackend(IOBackend):
         array_name: str | list[str],
     ) -> None:
         """
-        Stores the data from the current forecast step. Captures static fields
-        from the first step.
+        Stores the data from the current forecast step.
         """
-        # Capture static fields on the very first write call
-        if self.stored_static_data is None and self.static_field_names:
-            logger.info(
-                f"Capturing static fields from initial time step: {self.static_field_names}"
-            )
-
-            temp_array_name = (
-                [array_name] if isinstance(array_name, str) else array_name
-            )
-
-            for static_field_name in self.static_field_names:
-                if static_field_name not in temp_array_name:
-                    raise KeyError(f"static field '{static_field_name}' not found")
-
-            temp_processed_data = [
-                d.cpu().numpy() if hasattr(d, "cpu") else d for d in data_list
-            ]
-            temp_data_vars = {
-                name: (list(coords.keys()), data)
-                for name, data in zip(temp_array_name, temp_processed_data)
-            }
-            initial_ds = xr.Dataset(temp_data_vars, coords=coords)
-
-            # Filter the dataset to only include the specified static fields
-            vars_to_keep = [
-                v for v in self.static_field_names if v in initial_ds.data_vars
-            ]
-
-            self.stored_static_data = initial_ds[vars_to_keep]
-
         # Always store the latest data package for the final forecast step
         self.final_data_package = (data_list, coords, array_name)
 
@@ -223,12 +187,11 @@ class WPSBackend(IOBackend):
         }
         ds = xr.Dataset(data_vars, coords=coords).squeeze("lead_time")
 
-        # --- Inject stored static fields ---
-        if self.stored_static_data is not None:
-            logger.info("Overriding variables with stored static fields.")
-            # Squeeze lead_time from static data to match dynamic data
-            static_ds_squeezed = self.stored_static_data.squeeze("lead_time", drop=True)
-            ds.update(static_ds_squeezed)
+        logger.info("Adding static fields.")
+        z = SurfaceGeoPotential(cache=False)([0])
+        lsm = LandSeaMask(cache=False)([0])
+        ds["z"] = z.squeeze().expand_dims(time=ds.time)  # divide by g later
+        ds["lsm"] = lsm.squeeze().expand_dims(time=ds.time)
 
         hdate = valid_time.strftime("%Y-%m-%d_%H:%M:%S")
 
