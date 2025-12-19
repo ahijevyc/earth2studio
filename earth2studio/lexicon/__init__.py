@@ -24,6 +24,7 @@ from .gefs import GEFSLexicon, GEFSLexiconSel
 from .gfs import GFSLexicon
 from .goes import GOESLexicon
 from .hrrr import HRRRFXLexicon, HRRRLexicon
+from .isd import ISDLexicon
 from .jpss import JPSSLexicon
 from .mpas import MPASHybridLexicon, MPASLexicon
 from .mrms import MRMSLexicon
