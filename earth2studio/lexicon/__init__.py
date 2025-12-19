@@ -25,7 +25,7 @@ from .gfs import GFSLexicon
 from .goes import GOESLexicon
 from .hrrr import HRRRFXLexicon, HRRRLexicon
 from .jpss import JPSSLexicon
-from .mpas import MPASLexicon
+from .mpas import MPASHybridLexicon, MPASLexicon
 from .mrms import MRMSLexicon
 from .ncar import NCAR_ERA5Lexicon
 from .planetary_computer import (

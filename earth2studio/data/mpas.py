@@ -265,10 +265,10 @@ class MPASHybrid(_MPASBase):
     cache_path: Path = Path(datasource_cache_root()) / "mpas_hybrid"
 
     def __post_init__(self) -> None:
-        self.lexicon = MPASHybridLexicon
         if isinstance(self.pressure_levels, list):
             self.pressure_levels = tuple(sorted(self.pressure_levels))
         super().__post_init__()
+        self.lexicon = MPASHybridLexicon
 
     @lru_cache(maxsize=16)
     def _load_and_process(

@@ -35,9 +35,9 @@ STANDARD_LAPSE_RATE = 0.0065
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 class MPASLexicon(metaclass=LexiconType):
     """
-    Defines the lexicon for custom MPAS data. This class translates standard
+    Defines the lexicon for MPAS data. This class translates standard
     earth2studio variable names to their corresponding names in the MPAS NetCDF
-    files. It also handles pressure level remapping and derived variable
+    files. It also substitutes close-enough pressure levels and derived variable
     calculations as required by the source data.
     """
 
@@ -48,7 +48,7 @@ class MPASLexicon(metaclass=LexiconType):
     _MIX_RATIO_PREFIX = "mixing_ratio_"
     _TEMP_PREFIX = "temperature_"
 
-    _PRESSURE_MAP = {
+    _NEAREST_PRESSURE_MAP = {
         300: 250,
         400: 500,
         600: 700,
@@ -119,9 +119,13 @@ class MPASLexicon(metaclass=LexiconType):
         MPAS source file variable names, as required by the downstream model.
         """
         if pl <= 200:
+            logger.warning(f"Returning plvl 200 instead of {pl}")
             return 200
         # .get() provides a default value (pl) if the key is not in the map
-        return MPASLexicon._PRESSURE_MAP.get(pl, pl)
+        pl_out = MPASLexicon._NEAREST_PRESSURE_MAP.get(pl, pl)
+        if pl != pl_out:
+            logger.warning(f"Returning plvl {pl_out} instead of {pl}")
+        return pl_out
 
     @classmethod
     def required_variables(cls, variables: list[str]) -> list[str]:
@@ -256,7 +260,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
             if not cls.is_3d_variable(var):
                 if var == "z":  # surface geopotential
                     required.add("ter")
-                elif var == "msl":  # mean sea level pressure
+                elif var in ["msl", "surface_temperature"]:  # mean sea level pressure
                     required.update(
                         [
                             "pressure_base",
@@ -488,7 +492,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
             and "mean_sea_level_pressure" not in ds
         ):
             logger.info(
-                "Deriving mslp from sfc press, sfc geopotential, press, and temperature."
+                "Deriving mslp, sfc temp from sfc press, sfc geopotential, press, and temp."
             )
             p_sfc_q = ds["surface_pressure"].metpy.quantify()
             z_sfc_q = ds["geopotential_at_surface"].metpy.quantify()
@@ -512,7 +516,8 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 t_Le_q
                 + gamma * dry_air_gas_constant / g * (p_sfc_q / p_Le_q - 1) * t_Le_q
             )
-            ds["surface_temperature"] = t_sfc_q
+            # copy surface_temperature, so it doesn't change below
+            ds["surface_temperature"] = t_sfc_q.copy()
             t_msl_q = (
                 t_sfc_q + gamma * z_sfc_q / g
             )  # temperature at msl (zero geopotential)
