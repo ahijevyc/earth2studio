@@ -106,6 +106,9 @@ class MPASLexicon(metaclass=LexiconType):
             elif var_type == "v":
                 return f"umeridional_{target_level}hPa"
             elif var_type == "w":
+                # only have w_700hPa and w_500hPa
+                target_level = 500 if level < 600 else 700
+                logger.warning(f"Returning w_{target_level}hPa instead of w_{level}hPa")
                 return f"w_{target_level}hPa"
             elif var_type in ["q", "r"]:  # Support for humidity types
                 return f"mixing_ratio_{target_level}hPa"
@@ -285,14 +288,16 @@ class MPASHybridLexicon(metaclass=LexiconType):
             base_var = re.sub(r"\d+$", "", var)
             required.add(cls.get_item(base_var))
             required.update(["pressure_p", "pressure_base"])
-            # needed to interpolate below surface (in MPASHybrid DataSource).
-            required.add("surface_pressure")
-            required.add("surface_temperature")
             if base_var in ["t", "z"]:
                 # to interpolate geopotential below surface (in MPASHybrid DataSource).
-                required.add("t2m")
-                if base_var == "z":
-                    required.add("ter")
+                required.update(
+                    [
+                        "surface_pressure",
+                        "theta",
+                        "ter",
+                        "t2m",
+                    ]
+                )
             if base_var == "w":
                 required.update(["zgrid", "theta", "qv"])
 

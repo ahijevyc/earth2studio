@@ -20,7 +20,7 @@ from earth2studio.lexicon.mpas import MPASLexicon
 class MPASEnsemble(_MPASBase):
     """
     A custom earth2studio data source for loading, processing, and regridding
-    MPAS model *ensemble* output. This class handles the unstructured MPAS grid
+    MPAS model *ensemble* output from HWT. This class handles the unstructured MPAS grid
     by regridding it to a regular lat-lon grid using a nearest-neighbor
     approach with a KDTree. It supports fetching data for multiple ensemble members
     at specific forecast hours.
@@ -33,17 +33,10 @@ class MPASEnsemble(_MPASBase):
         `{data_path}/{YYYYMMDDHH}/post/mem_{mem}/diag.{YYYY-MM-DD_HH.MM.SS}.nc`
     grid_path : Path
         The path to the static MPAS grid definition file.
-    d_lon : float, optional
-        Target longitude spacing for regridding. Defaults to 0.25.
-    d_lat : float, optional
-        Target latitude spacing for regridding. Defaults to 0.25.
     cache_path : Path, optional
         The directory to store cached regridding indices.
     """
 
-    grid_path: Path
-    d_lon: float = 0.25
-    d_lat: float = 0.25
     cache_path: Path = Path(datasource_cache_root()) / "mpas_ensemble"
 
     def __post_init__(self) -> None:
@@ -67,11 +60,12 @@ class MPASEnsemble(_MPASBase):
         valid_time = itime + pd.Timedelta(hours=fhr)
 
         data_paths = [
-            f"{self.data_path}/{itime.strftime('%Y%m%d%H')}/post/mem_{mem}/diag.{valid_time.strftime('%Y-%m-%d_%H.%M.%S')}.nc"
+            f"{self.data_path}/mem_{mem}/diag.{valid_time.strftime('%Y-%m-%d_%H.%M.%S')}.nc"
             for mem in members
         ]
 
         existing_paths = [p for p in data_paths if os.path.exists(p)]
+        self.existing_paths = existing_paths
         if not existing_paths:
             # Create a formatted string of attempted paths for the error message
             attempted_paths_str = "\n".join(map(str, data_paths))
@@ -93,7 +87,7 @@ class MPASEnsemble(_MPASBase):
             This prevents carrying around unneeded data.
             """
             # Add member coordinate
-            match = re.search(r"mem_(\d+)", ds.encoding["source"])
+            match = re.search(r"mem_?(\d+)", ds.encoding["source"])
             mem = int(match.group(1)) if match else -1
             ds = ds.expand_dims({"member": [mem]})
 
@@ -120,6 +114,8 @@ class MPASEnsemble(_MPASBase):
             parallel=True,
             engine="netcdf4",
         )
+
+        ds_mpas = ds_mpas.squeeze("Time")
 
         # Validate that the data grid matches the regridding indices
         if ds_mpas.sizes.get("nCells") != self.grid_ncells:

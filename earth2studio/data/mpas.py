@@ -188,10 +188,11 @@ class MPASPres(_MPASBase):
             raise FileNotFoundError(f"MPAS file not found for time {time} at: {path}")
 
         with xtime(xr.open_dataset(path)) as ds_mpas:
-            # Select exact time, will raise KeyError if not found.
             ds_slice = ds_mpas.sel(time=time)
+
             if "time" in ds_slice.coords:
                 ds_slice = ds_slice.drop_vars("time")
+            # Squeeze time/initial_time lexicon.derive_variables complains about 3d boolean indices
             ds_slice = ds_slice.squeeze()
 
             if ds_slice.sizes.get("nCells") != self.grid_ncells:
@@ -295,6 +296,7 @@ class MPASHybrid(_MPASBase):
 
             if "time" in ds_slice.coords:
                 ds_slice = ds_slice.drop_vars("time")
+            # Squeeze time/initial_time lexicon.derive_variables complains about 3d boolean indices
             ds_slice = ds_slice.squeeze()
 
             if ds_slice.sizes.get("nCells") != self.grid_ncells:
