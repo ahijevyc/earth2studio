@@ -53,7 +53,6 @@ class WPSBackend(IOBackend):
         self,
         path: Path,
         model_source: str = "earth2studio",
-        static_fields: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """
