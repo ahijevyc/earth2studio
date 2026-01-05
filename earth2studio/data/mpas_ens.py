@@ -155,6 +155,9 @@ class MPASEnsemble(_MPASBase):
         ds_final.attrs["initialization_time"] = str(time)
         ds_final.attrs["forecast_hour"] = fhr
 
+        # Avoid DimensionalityError when converting variables to DataArray
+        ds_final = ds_final.metpy.dequantify()
+
         # Convert to a single DataArray with a 'variable' dimension
         return ds_final.to_dataarray(dim="variable")
 

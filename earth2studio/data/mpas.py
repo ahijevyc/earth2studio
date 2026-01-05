@@ -188,6 +188,7 @@ class MPASPres(_MPASBase):
             raise FileNotFoundError(f"MPAS file not found for time {time} at: {path}")
 
         with xtime(xr.open_dataset(path)) as ds_mpas:
+            logger.info(f"Open {path}")
             ds_slice = ds_mpas.sel(time=time)
 
             if "time" in ds_slice.coords:
@@ -292,6 +293,7 @@ class MPASHybrid(_MPASBase):
             raise FileNotFoundError(f"MPAS file not found for time {time} at: {path}")
 
         with xtime(xr.open_dataset(path)) as ds_mpas:
+            logger.info(f"Open {path}")
             ds_slice = ds_mpas.sel(time=time)
 
             if "time" in ds_slice.coords:
@@ -308,6 +310,7 @@ class MPASHybrid(_MPASBase):
             ds_loaded = ds_slice[data_vars_to_load].load()
 
         with xr.open_dataset(self.grid_path) as grid_ds:
+            logger.info(f"Open {self.grid_path}")
             grid_vars_to_load = [v for v in source_variables if v in grid_ds.data_vars]
             for var_name in grid_vars_to_load:
                 ds_loaded[var_name] = grid_ds[var_name].load()
@@ -382,11 +385,11 @@ class MPASHybrid(_MPASBase):
 
         # Create a 1D DataArray for target pressure levels
         target_levels_pa_da = xr.DataArray(
-            target_levels_pa,
+            target_levels_pa * units.Pa,
             dims=["level"],
             coords={"level": [p / 100 for p in target_levels_pa]},
         )
-        target_levels_pa_da.level.attrs["units"] = "hPa"
+        target_levels_pa_da["level"].attrs["units"] = "hPa"
 
         interpolated_vars = {}
         for name, da in ds.data_vars.items():
@@ -450,9 +453,9 @@ class MPASHybrid(_MPASBase):
                 alpha = STANDARD_LAPSE_RATE * dry_air_gas_constant / g
                 y = alpha * ln_pressure_ratio
                 if name == "temperature":
-                    surface_temperature = ds["surface_temperature"].metpy.quantify()
+                    surface_temperature = ds["surface_temperature"]
                     # Trenberth et al. Eqn (16-19)
-                    surface_height = ds["geopotential_at_surface"].metpy.quantify() / g
+                    surface_height = ds["geopotential_at_surface"] / g
                     t_0 = surface_temperature + surface_height * STANDARD_LAPSE_RATE
                     orog = surface_height >= 2000 * units.m
                     medium_orog = (surface_height >= 2000 * units.m) & (
@@ -483,7 +486,7 @@ class MPASHybrid(_MPASBase):
                     alpha_orog = (
                         dry_air_gas_constant
                         * (t_0 - surface_temperature)
-                        / ds["geopotential_at_surface"].metpy.quantify()
+                        / ds["geopotential_at_surface"]
                     )
 
                     # Apply alpha_orog where 'orog' is True, keep original alpha elsewhere
@@ -502,10 +505,8 @@ class MPASHybrid(_MPASBase):
                     )
 
                 elif name == "geopotential":
-                    surface_geopotential = ds[
-                        "geopotential_at_surface"
-                    ].metpy.quantify()
-                    surface_temperature = ds["surface_temperature"].metpy.quantify()
+                    surface_geopotential = ds["geopotential_at_surface"]
+                    surface_temperature = ds["surface_temperature"]
                     low_temp = (
                         surface_temperature < 255 * units.K
                     )  # Eqn (14.3) Trenberth says "below ground geopotential is treated as for mslp".

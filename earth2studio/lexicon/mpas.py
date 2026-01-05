@@ -1,8 +1,8 @@
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 # Imports
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+import datetime
 import re
-from datetime import datetime
 from pathlib import Path
 
 import metpy.xarray  # noqa: F401 (activates .metpy accessor)
@@ -27,7 +27,38 @@ from earth2studio.lexicon.base import LexiconType
 
 # This code uses convention in Trenberth et al. assuming STANDARD_LAPSE_RATE is positive.
 # Standard lapse rate in K/m for temperature extrapolation below ground.
-STANDARD_LAPSE_RATE = 0.0065
+STANDARD_LAPSE_RATE = 0.0065 * units.K / units.m
+
+
+def standardizeMpasUnits(ds: xr.Dataset) -> xr.Dataset:
+    """
+    MetPy/Pint Strictness: Recent versions of the pint library have become stricter.
+    It no longer guesses that "unitless" means "no units"; it looks for a definition
+    in its registry and fails when it can't find one.
+    """
+    # Variables that are definitely strings/labels and shouldn't have units
+    bad_unit_vars = ["initial_time", "xtime", "initial_time_step"]
+
+    for var in ds.variables:
+        if var in bad_unit_vars:
+            if "units" in ds[var].attrs:
+                del ds[var].attrs["units"]
+            continue
+
+        if "units" in ds[var].attrs:
+            u = ds[var].attrs["units"]
+            # Replace LaTeX style with Pint friendly style
+            u = u.replace("^{-1}", "-1").replace("^{-2}", "-2").replace("^{1}", "1")
+
+            # Map problematic strings to 'dimensionless'
+            if u.lower() in ["unitless", "msl", "none", "percent"]:
+                u = "dimensionless"
+            if u == "m MSL":
+                u = "meter"
+
+            ds[var].attrs["units"] = u
+
+    return ds
 
 
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -181,6 +212,9 @@ class MPASLexicon(metaclass=LexiconType):
         present in the source dataset. This function is intended to be used as
         the `preprocess` function in `xr.open_mfdataset`.
         """
+        ds = standardizeMpasUnits(ds)
+        ds = ds.metpy.quantify()
+
         # --- Derive Geopotential from Height ---
         height_vars = [
             v for v in ds.data_vars if v.startswith(MPASLexicon._HEIGHT_PREFIX)
@@ -189,7 +223,7 @@ class MPASLexicon(metaclass=LexiconType):
             g_var = h_var.replace(MPASLexicon._HEIGHT_PREFIX, MPASLexicon._GPH_PREFIX)
             if g_var not in ds:
                 logger.info(f"Deriving '{g_var}' from '{h_var}'.")
-                ds[g_var] = ds[h_var] * g.m
+                ds[g_var] = ds[h_var] * g
 
         # --- Derive Mixing Ratio from Relative Humidity ---
         rh_vars = [v for v in ds.data_vars if v.startswith(MPASLexicon._RELHUM_PREFIX)]
@@ -201,7 +235,7 @@ class MPASLexicon(metaclass=LexiconType):
             if q_var not in ds and t_var in ds:
                 logger.info(f"Deriving '{q_var}' from '{rh_var}' and '{t_var}'.")
                 pressure_hpa = float(rh_var.split("_")[-1][:-3]) * units.hPa
-                temperature_k = ds[t_var] * units.kelvin
+                temperature_k = ds[t_var]
                 relative_humidity = ds[rh_var]
 
                 # Perform unit-aware calculation
@@ -211,7 +245,7 @@ class MPASLexicon(metaclass=LexiconType):
                 # Used to say to keep the result as a unit-aware DataArray.
                 # But other variables are dequantified and TypeError: Mixing chunked array
                 # types is not supported in dask.
-                ds[q_var] = mixing_ratio.metpy.dequantify()
+                ds[q_var] = mixing_ratio
 
         return ds
 
@@ -219,7 +253,7 @@ class MPASLexicon(metaclass=LexiconType):
 class MPASHybridLexicon(metaclass=LexiconType):
     """
     Defines the lexicon for native MPAS hybrid-level data. This class translates
-    standard earth2studio variable names to their corresponding raw names in the
+    standard earth2studio variable names to their corresponding names in the
     MPAS NetCDF files (e.g., 't' -> 'theta'). It also provides the logic for
     deriving full pressure, temperature, and geopotential from the model's
     native variables.
@@ -346,21 +380,23 @@ class MPASHybridLexicon(metaclass=LexiconType):
         """
         Derives standard meteorological variables from the raw MPAS output.
         """
+        ds = standardizeMpasUnits(ds)
+        ds = ds.metpy.quantify()
+
         # --- 1. Derive Full Pressure ---
         if "pressure_base" in ds and "pressure_p" in ds and "pressure" not in ds:
             ds["pressure"] = ds["pressure_base"] + ds["pressure_p"]
-            ds["pressure"].attrs["units"] = "Pa"
 
         # --- 2. Derive Temperature from Potential Temperature ---
         if "theta" in ds and "pressure" in ds and "temperature" not in ds:
-            pressure_q = ds["pressure"].metpy.quantify()
-            theta_q = ds["theta"].metpy.quantify()
-            ref_press_pa = pot_temp_ref_press.to(pressure_q.metpy.units)
+            pressure = ds["pressure"]
+            theta = ds["theta"]
+            ref_press_pa = pot_temp_ref_press.to(pressure.metpy.units)
             kappa = dry_air_gas_constant / dry_air_spec_heat_press
-            exner = (pressure_q / ref_press_pa) ** kappa
-            ds["temperature"] = theta_q * exner
+            exner = (pressure / ref_press_pa) ** kappa
+            ds["temperature"] = theta * exner
 
-        # --- 3. Derive Geopotential from Geometric Height ---
+        # --- 3. Derive Geopotential on model layer midpoint from Geometric Height ---
         if "zgrid" in ds and "pressure" in ds and "geopotential" not in ds:
             zgrid_vals = ds["zgrid"].values
             z_mid_level_vals = 0.5 * (zgrid_vals[..., :-1] + zgrid_vals[..., 1:])
@@ -373,9 +409,9 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 dims=("nCells", "nVertLevels"),
                 coords=height_coords,
             )
-            ds["height"] = height_da * units.m
-            # geopotential_from_geometric_height in metview
+            ds["height"] = height_da * ds["zgrid"].metpy.units
 
+            # geopotential_from_geometric_height in metview
             ds["geopotential"] = ds["height"] * Re * g / (Re + ds["height"])
 
         # --- 4. Derive Pressure on the staggered 'w' grid ---
@@ -389,7 +425,8 @@ class MPASHybridLexicon(metaclass=LexiconType):
             # at the same vertical levels as 'w'.
             pressure, zgrid = ds["pressure"], ds["zgrid"]
             nVertLevels = ds.sizes["nVertLevels"]
-            pressure_on_w = xr.full_like(zgrid, np.nan)
+            pressure_on_w = xr.full_like(zgrid, np.nan).drop_attrs()
+            pressure_on_w.name = pressure.name
 
             z_k = zgrid.isel(nVertLevelsP1=slice(1, nVertLevels))
             z_km1 = zgrid.isel(nVertLevelsP1=slice(0, nVertLevels - 1))
@@ -408,28 +445,24 @@ class MPASHybridLexicon(metaclass=LexiconType):
                     zgrid.isel(nVertLevelsP1=k) + zgrid.isel(nVertLevelsP1=level_idx)
                 )
                 w1_bound = (z0 - z2) / (z1 - z2)
-                log_p_bound = w1_bound * np.log(pressure.isel(nVertLevels=j)) + (
+                log_p_bound = w1_bound * np.log(pressure.isel(nVertLevels=j).values) + (
                     1 - w1_bound
-                ) * np.log(pressure.isel(nVertLevels=k))
+                ) * np.log(pressure.isel(nVertLevels=k).values)
                 pressure_on_w.values[:, i] = np.exp(log_p_bound)
 
-            ds["pressure_on_w"] = pressure_on_w
-            ds["pressure_on_w"].attrs["units"] = "Pa"
+            ds["pressure_on_w"] = pressure_on_w * pressure.metpy.units
 
         # --- 5. Derive Total Precipitation (m) ---
         if "rainc" in ds and "rainnc" in ds and "tp06" not in ds:
             # Graphcast expects precip in meters, so we convert.
-            ds["tp06"] = ds["rainc"].metpy.quantify() + ds["rainnc"].metpy.quantify()
-            ds["tp06"] = ds["tp06"].metpy.convert_units(
-                "m"
-            )  # Graphcast outputs precip in m. Input should be too.
+            ds["tp06"] = ds["rainc"] + ds["rainnc"]
+            # Graphcast outputs precip in m. Input should be too
+            ds["tp06"] = ds["tp06"].metpy.convert_units("m")
 
         # --- 6. Derive Surface Geopotential (m^2/s^2) ---
         if "ter" in ds and "geopotential_at_surface" not in ds:
             # 'ter' is terrain height in 'm'
-            ds["geopotential_at_surface"] = (
-                ds["ter"].metpy.quantify() * g
-            ).metpy.dequantify()
+            ds["geopotential_at_surface"] = ds["ter"] * g
 
         # --- 7. Convert Geometric to Pressure Vertical Velocity ---
         if (
@@ -450,16 +483,16 @@ class MPASHybridLexicon(metaclass=LexiconType):
             # 6. Save this new variable as 'pressure_vertical_velocity'.
             # ==================================================================
             logger.info("Deriving pressure vertical velocity from geometric w.")
-            w_geom_q = ds["w"].metpy.quantify()
-            p_on_w_q = ds["pressure_on_w"].metpy.quantify()
-            temp_mid_q = ds["temperature"].metpy.quantify()
-            qv_mid_q = ds["qv"].metpy.quantify()
+            w_geom = ds["w"]
+            p_on_w = ds["pressure_on_w"]
+            temp_mid = ds["temperature"]
+            qv_mid = ds["qv"]
 
             # Interpolate T and qv from mid-levels to staggered levels
-            temp_mid_vals = temp_mid_q.values
-            qv_mid_vals = qv_mid_q.values
-            temp_on_w_vals = np.zeros_like(w_geom_q.values)
-            qv_on_w_vals = np.zeros_like(w_geom_q.values)
+            temp_mid_vals = temp_mid.values
+            qv_mid_vals = qv_mid.values
+            temp_on_w_vals = np.zeros_like(w_geom.values)
+            qv_on_w_vals = np.zeros_like(w_geom.values)
             temp_on_w_vals[:, 1:-1] = 0.5 * (
                 temp_mid_vals[:, :-1] + temp_mid_vals[:, 1:]
             )
@@ -472,18 +505,18 @@ class MPASHybridLexicon(metaclass=LexiconType):
 
             # Re-create DataArrays with correct coords/dims and attach units
             temp_on_w_da = (
-                xr.DataArray(temp_on_w_vals, dims=w_geom_q.dims, coords=w_geom_q.coords)
-                * units.kelvin
+                xr.DataArray(temp_on_w_vals, dims=w_geom.dims, coords=w_geom.coords)
+                * ds["temperature"].metpy.units
             )
             qv_on_w_da = (
-                xr.DataArray(qv_on_w_vals, dims=w_geom_q.dims, coords=w_geom_q.coords)
-                * units.dimensionless
+                xr.DataArray(qv_on_w_vals, dims=w_geom.dims, coords=w_geom.coords)
+                * ds["qv"].metpy.units
             )
 
             # Calculate virtual temperature -> density -> omega
             tv_on_w = temp_on_w_da * (1 + 0.61 * qv_on_w_da)
-            rho_on_w = p_on_w_q / (dry_air_gas_constant * tv_on_w)
-            omega = -w_geom_q * g * rho_on_w
+            rho_on_w = p_on_w / (dry_air_gas_constant * tv_on_w)
+            omega = -w_geom * g * rho_on_w
 
             # Save the new variable with the name from get_derived_name
             ds["pressure_vertical_velocity"] = omega.metpy.convert_units("Pa/s")
@@ -499,55 +532,59 @@ class MPASHybridLexicon(metaclass=LexiconType):
             logger.info(
                 "Deriving mslp, sfc temp from sfc press, sfc geopotential, press, and temp."
             )
-            p_sfc_q = ds["surface_pressure"].metpy.quantify()
-            z_sfc_q = ds["geopotential_at_surface"].metpy.quantify()
+            p_sfc = ds["surface_pressure"]
+            z_sfc = ds["geopotential_at_surface"]
             # FULL-POS in the IFS. https://www.umr-cnrm.fr/gmapdoc/IMG/pdf/ykfpos46t1r1.pdf
             # gamma may take multiple values, depending on the surface condition, so
             # it can't be a scalar constant.
-            gamma = xr.full_like(z_sfc_q, STANDARD_LAPSE_RATE * units.K / units.m)
-            if (
-                ds["pressure"].isel(nVertLevels=0).mean()
-                < ds["pressure"].isel(nVertLevels=-1).mean()
+            gamma = xr.full_like(z_sfc, STANDARD_LAPSE_RATE).drop_attrs()
+            gamma.name = "standard_lapse_rate"
+            if ds["pressure"].isel(nVertLevels=0, nCells=0) < ds["pressure"].isel(
+                nVertLevels=-1, nCells=0
             ):
                 raise ValueError(
                     f'expected pressure in decreasing order {ds["pressure"]}'
                 )
             # Le stands for (Le)vel number defined by variable NLEXTRAP in FULL-POS IFS code.
             # This is the lowest level (with highest pressure).
-            t_Le_q = ds["temperature"].isel(nVertLevels=0).metpy.quantify()
-            p_Le_q = ds["pressure"].isel(nVertLevels=0).metpy.quantify()
+            t_Le_q = ds["temperature"].isel(nVertLevels=0)
+            p_Le_q = ds["pressure"].isel(nVertLevels=0)
 
-            t_sfc_q = (
+            t_sfc = (
                 t_Le_q
-                + gamma * dry_air_gas_constant / g * (p_sfc_q / p_Le_q - 1) * t_Le_q
+                + gamma * dry_air_gas_constant / g * (p_sfc / p_Le_q - 1) * t_Le_q
             )
             # copy surface_temperature, so it doesn't change below
-            ds["surface_temperature"] = t_sfc_q.copy()
-            t_msl_q = (
-                t_sfc_q + gamma * z_sfc_q / g
-            )  # temperature at msl (zero geopotential)
+            ds["surface_temperature"] = t_sfc.copy()
+            # temperature at msl (zero geopotential)
+            t_msl = t_sfc + gamma * z_sfc / g
 
             # Apply temperature/lapse rate corrections
             T_THRESHOLD_1 = 290.5 * units.K
             T_THRESHOLD_2 = 255.0 * units.K
-            cond1 = (t_msl_q > T_THRESHOLD_1) & (t_sfc_q <= T_THRESHOLD_1)
-            cond2 = (t_msl_q > T_THRESHOLD_1) & (t_sfc_q > T_THRESHOLD_1)
-            gamma[cond1] = (T_THRESHOLD_1 - t_sfc_q[cond1]) * g / z_sfc_q[cond1]
+            cond1 = (t_msl > T_THRESHOLD_1) & (t_sfc <= T_THRESHOLD_1)
+            gamma = xr.where(cond1, (T_THRESHOLD_1 - t_sfc) * g / z_sfc, gamma)
 
-            gamma[cond2] = xr.DataArray(0.0) * units.K / units.m
-            t_sfc_q[cond2] = 0.5 * (T_THRESHOLD_1 + t_sfc_q[cond2])
+            cond2 = (t_msl > T_THRESHOLD_1) & (t_sfc > T_THRESHOLD_1)
+            gamma = xr.where(cond2, 0.0 * units.K / units.m, gamma)
+            t_sfc = xr.where(cond2, 0.5 * (T_THRESHOLD_1 + t_sfc), t_sfc)
 
-            cond3 = t_sfc_q < T_THRESHOLD_2
-            gamma[cond3] = xr.DataArray(STANDARD_LAPSE_RATE) * units.K / units.m
-            t_sfc_q[cond3] = 0.5 * (T_THRESHOLD_2 + t_sfc_q[cond3])
+            cond3 = t_sfc < T_THRESHOLD_2
+            # Tried simple STANDARD_LAPSE_RATE but errors about units, and then lack of shape.
+            gamma = xr.where(
+                cond3,
+                xr.where(cond3, xr.full_like(gamma, STANDARD_LAPSE_RATE), gamma),
+                gamma,
+            )
+            t_sfc = xr.where(cond3, 0.5 * (T_THRESHOLD_2 + t_sfc), t_sfc)
 
-            x = gamma * z_sfc_q / (g * t_sfc_q)
-            p_msl = p_sfc_q * np.exp(
-                z_sfc_q / (dry_air_gas_constant * t_sfc_q) * (1 - x / 2 + (x**2) / 3)
+            x = gamma * z_sfc / (g * t_sfc)
+            p_msl = p_sfc * np.exp(
+                z_sfc / (dry_air_gas_constant * t_sfc) * (1 - x / 2 + (x**2) / 3)
             )
             # Where surface geopotential is near zero, mean sea level pressure = surface pressure.
-            cond4 = abs(z_sfc_q) < 0.001 * units.J / units.kg
-            p_msl[cond4] = p_sfc_q[cond4]
+            cond4 = abs(z_sfc) < 0.001 * units.J / units.kg
+            p_msl = xr.where(cond4, p_sfc, p_msl)
 
             ds["mean_sea_level_pressure"] = p_msl
 
@@ -576,7 +613,7 @@ def xtime(ds: xr.Dataset) -> xr.Dataset:
     # --- Process Initial Time ---
     logger.info("Decoding 'initial_time' variable.")
     initial_time_str = ds["initial_time"].load().item().decode("utf-8").strip()
-    initial_time = datetime.strptime(initial_time_str, "%Y-%m-%d_%H:%M:%S")
+    initial_time = datetime.datetime.strptime(initial_time_str, "%Y-%m-%d_%H:%M:%S")
     # Assign as a scalar coordinate
     ds = ds.expand_dims("initial_time").assign_coords(initial_time=[initial_time])
 
@@ -596,8 +633,10 @@ def xtime(ds: xr.Dataset) -> xr.Dataset:
     logger.info("Decoding 'xtime' (valid time) variable.")
 
     # Define a function that parses a single byte-string time
-    def parse_time(t_bytes: bytes) -> datetime:
-        return datetime.strptime(t_bytes.decode("utf-8").strip(), "%Y-%m-%d_%H:%M:%S")
+    def parse_time(t_bytes: bytes) -> datetime.datetime:
+        return datetime.datetime.strptime(
+            t_bytes.decode("utf-8").strip(), "%Y-%m-%d_%H:%M:%S"
+        )
 
     parse_time_vec = np.vectorize(parse_time)
     time_values = parse_time_vec(ds["xtime"].values).flatten()
