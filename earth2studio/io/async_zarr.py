@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -407,7 +407,7 @@ class AsyncZarrBackend:
         # https://s3fs.readthedocs.io/en/latest/#async
         session = None
         try:
-            session = await self.fs.set_session()
+            session = await self.fs.set_session(refresh=True)
         except AttributeError:
             pass
 
@@ -558,7 +558,7 @@ class AsyncZarrBackend:
         # https://s3fs.readthedocs.io/en/latest/#async
         session = None
         try:
-            session = await fs.set_session()
+            session = await fs.set_session(refresh=True)
         except AttributeError:
             pass
 

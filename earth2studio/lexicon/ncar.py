@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -43,8 +43,10 @@ class NCAR_ERA5Lexicon(metaclass=LexiconType):
             "t": (130, "t", "e5.oper.an.pl", "ll025sc"),
             "u": (131, "u", "e5.oper.an.pl", "ll025uv"),
             "v": (132, "v", "e5.oper.an.pl", "ll025uv"),
+            "w": (135, "w", "e5.oper.an.pl", "ll025sc"),
             "q": (133, "q", "e5.oper.an.pl", "ll025sc"),
             "sp": (134, "sp", "e5.oper.an.sfc", "ll025sc"),
+            "tcw": (136, "tcw", "e5.oper.an.sfc", "ll025sc"),
             "tcwv": (137, "tcwv", "e5.oper.an.sfc", "ll025sc"),
             "msl": (151, "msl", "e5.oper.an.sfc", "ll025sc"),
             "r": (157, "r", "e5.oper.an.pl", "ll025sc"),
@@ -54,6 +56,13 @@ class NCAR_ERA5Lexicon(metaclass=LexiconType):
             "t2m": (167, "2t", "e5.oper.an.sfc", "ll025sc"),
             "u100m": (246, "100u", "e5.oper.an.sfc", "ll025sc"),
             "v100m": (247, "100v", "e5.oper.an.sfc", "ll025sc"),
+            "skt": (235, "skt", "e5.oper.an.sfc", "ll025sc"),
+            "stl1": (139, "stl1", "e5.oper.an.sfc", "ll025sc"),
+            "stl2": (170, "stl2", "e5.oper.an.sfc", "ll025sc"),
+            "sd": (141, "sd", "e5.oper.an.sfc", "ll025sc"),
+            "lsp": (142, "lsp", "e5.oper.fc.sfc.accumu", "ll025sc"),  # hourly (m)
+            "cp": (143, "cp", "e5.oper.fc.sfc.accumu", "ll025sc"),  # hourly (m)
+            "smlt": (45, "smlt", "e5.oper.fc.sfc.accumu", "ll025sc"),  # hourly (m)
         }
         pressure_levels = [
             1,
@@ -94,7 +103,7 @@ class NCAR_ERA5Lexicon(metaclass=LexiconType):
             975,
             1000,
         ]
-        pattern = "{product}::{n}_{eid}_{ename}::{grid}::{level}"
+        pattern = "{product}::{n}_{eid:03}_{ename}::{grid}::{level}"
 
         vocab = {}
         for var, (eid, ename, product, grid) in params.items():

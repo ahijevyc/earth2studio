@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -202,8 +202,8 @@ class AIFSLexicon(ECMWFOpenDataLexicon):
         "skt": "skt::sfc::",
         "slor": "slor::sfc::",
         "sp": "sp::sfc::",
-        "ssrd": "ssrd::sfc::",
-        "strd": "strd::sfc::",
+        "ssrd06": "ssrd::sfc::",
+        "strd06": "strd::sfc::",
         "tcc": "tcc::sfc::",
         "tcw": "tcw::sfc::",
         "tp": "tp::sfc::",

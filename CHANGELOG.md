@@ -7,11 +7,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.12.0a0] - 2026-01-xx
+## [0.13.0a0] - 2026-03-xx
 
 ### Added
 
+- Added NOAA UFS observation dataframe sources for satellite and conventional data
+- Added Earth2Studio base schema for dataframe sources
+- Added Planetary Computer data source for ECMWF IFS analysis data
+- Added accumulated variable support to NCAR ERA5 data source
+
 ### Changed
+
+- Changed ISD data frame return to master schema
 
 ### Deprecated
 
@@ -19,11 +26,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Made tp in HRRR and GFS units m for package consistency
+- Bug in cbottle datasource resulting identical samples for multiple samples
 
 ### Security
 
 ### Dependencies
+
+- Added pyarrow explicitly to core dependencies
+
+## [0.12.1] - 2026-01-29
+
+### Changed
+
+- Moved cBottle checkpoints to huggingface repo
+- Added config.json download for HF models to track downloads
+
+### Dependencies
+
+- Added onnxscript to onnx models to add support for newer torch versions
+- Moved lock file / CI system to torch 2.9.1
+
+## [0.12.0] - 2026-01-26
+
+### Added
+
+- Added CorrDiff CMIP6->ERA5 diagnostic model
+- Added derived TCWV diagnostic model
+- Added verbose option for inference workflows in run.py to toggle off tqdm
+- Added Atlas prognostic model
+- Added StormScope GOES and MRMS models
+
+### Changed
+
+- Removed AIFS-ENS invariants from model input / outputs and moved into model wrapper
+- CDS and NCAR lexica have been updated with variables for AIFS-ENS
+- Switch grib reads in HRRR data sources from xarray to pygrib to fix memory leak
+- Updated AIFS model to 1.1 checkpoint version
+- Updated GFS lexicon to include composite reflectivity
+- Moved most data sources from cfgrib to pygrib
+
+### Fixed
+
+- Made tp in HRRR and GFS units m for package consistency
+- Fixed batched inference support for AIFS and AIFS ENS
+
+### Dependencies
+
+- Added pygrib to core dependency group
+- Moved cfgrib to optional dependency group
+- Resolved conflict between AIFS and AIFS ENS groups
+- Removed old numcodecs limit
 
 ## [0.11.0] - 2025-12-19
 
@@ -34,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added MRMS data source
 - Added IFS and IFS-ENS initial state datasources
 - Local datasource example
-- Added ``TimeWindow`` datasource wrapper for fetching data at multiple time offsets
+- Added `TimeWindow` datasource wrapper for fetching data at multiple time offsets
 - Added NOAA's Integrated Surface Database (ISD) data frame source
 
 ### Changed
@@ -54,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Vertical wind variables in GFS / GEFS to be Pa s-1
+- Fixed s3fs datasources to support aiobotocore 3.0 use
 
 ### Dependencies
 

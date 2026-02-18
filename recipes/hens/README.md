@@ -7,7 +7,7 @@ flexible framework for uncertainty quantification in weather prediction systems.
 
 A key application is the recovery of the HENS method, as described in
 [Huge Ensembles Part I][hens-paper], which provides a calibrated ensemble forecasting
-system based on Spherical Fourier Neural Operators (SFNO). HENS uses customised
+system based on Spherical Fourier Neural Operators (SFNO). HENS uses customized
 bred vectors for initial condition
 perturbations and multiple independently trained model checkpoints to represent
 model uncertainty, specifically designed for better representation of extreme
@@ -29,7 +29,7 @@ Key features include:
 <!-- markdownlint-disable MD033 -->
 <div align="center">
 
-![Earth2Studio Banner](https://huggingface.co/datasets/NickGeneva/Earth2StudioAssets/resolve/main/recipes/hens_cyclone_tracks.gif)
+![Earth2Studio Banner](https://huggingface.co/datasets/nvidia/earth2studio-assets/resolve/0.1.0/recipes/hens/hens_cyclone_tracks.gif)
 
 </div>
 <!-- markdownlint-enable MD033 -->
@@ -81,7 +81,7 @@ The HENS checkpoints have a larger memory footprint than other models supported 
 Earth2Studio.
 For the best experience the following hardware specifications are recommended:
 
-- GPU: CUDA Compute Compatability >8.0
+- GPU: CUDA Compute Compatibility >8.0
 - GPU Memory: >40Gb
 - Storage: >512Gb NVMe SSD
 
@@ -133,7 +133,7 @@ These can get executed by directly invoking the `main.py` file.
 [Hurricane Helene][helene-wiki] was a significant tropical cyclone that made landfall
 in September 2024.
 This workflow demonstrates ensemble inference for Helene, with the model
-initialised approximately two and a half days before landfall.
+initialized approximately two and a half days before landfall.
 In the configuration file `cfg/helene.yaml`.
 Users are encouraged to look at this configuration file and adjust properties
 accordingly.
@@ -186,7 +186,7 @@ Helene ensemble.
 - A fixed random seed is required to ensure identical initial condition perturbations
 - Below, we list the steps to set up a config file for reproducing, but you can also
   use the `reproduce_helene_batches.yaml` config file.
-- To demonstrate the benfits of reproducing indivudual batches, the reproduced field
+- To demonstrate the benefits of reproducing individual batches, the reproduced field
   data will store more variables on a larger domain than the original run.
 
 ##### Steps to Reproduce a Batch
@@ -196,7 +196,7 @@ Helene ensemble.
 generate data to compare against.
 
 1. **Identify the Batch to Reproduce**
-   - Determine the batch ID(s) you want to reproduce
+   - Determine the batch IDs you want to reproduce
    - Set these IDs in the `batch_ids_reproduce` parameter
 
 2. **Configure the Reproduction Run**
@@ -232,19 +232,19 @@ generate data to compare against.
 ### Configuration
 
 The pipeline follows Earth2Studio's modular design approach.
-It is highly customisable via [instantiating through Hydra][hydra-docs].
-This allows for flexible customisation of components. Additional functionality
-can be provided through custom functions and instantiated via Hydra, as
+It is highly customizable using [instantiating through Hydra][hydra-docs].
+This allows for flexible customization of components. Additional functionality
+can be provided through custom functions and instantiated using Hydra, as
 demonstrated in the configuration of the HENS perturbation.
 
 #### Project Basics
 
 Select a project name to uniquely identify your run. This prevents overwriting
-files from previous runs and helps with organisation. Note that `nensemble`
+files from previous runs and helps with organization. `nensemble`
 refers to the number of ensemble members per (IC × number of checkpoints).
 When used with the HENS perturbation, `nensemble` and `batch_size` have to be even
-as the perturbation method is symmetric, i.e. the perturbation is once added and once
-subtracted from the initial condition.
+as the perturbation method is symmetric, that is the perturbation is added once and
+subtracted once from the initial condition.
 
 ```yaml
 project: 'project_name' # project name
@@ -336,7 +336,7 @@ data_source:
 
 The pipeline supports various perturbation methods for initial conditions.
 While this example demonstrates the HENS perturbation configuration, any
-perturbation method can be implemented. Note that some perturbation methods
+perturbation method can be implemented. Some perturbation methods
 require runtime information that is only available during pipeline execution.
 
 ```yaml
@@ -367,7 +367,7 @@ cyclone_tracking:
 #### Writing Fields to Disk
 
 The pipeline supports writing forecast fields to disk through the `file_output` section.
-Users can specify the output directory, select variables for export, and optionally
+You can specify the output directory, select variables for export, and optionally
 define regional boundaries using lat/lon cropboxes. The output `format` is determined
 by the chosen IO backend class. Two backends, `KVBackend` and `XarrayBackend`, can be
 instantiated without additional arguments and are automatically written to netCDF files
@@ -410,11 +410,11 @@ uv run main.py --config-name=your_config.yaml
 ```
 
 The pipeline supports multi-GPU and multi-node execution, with individual inferences
-being fully independent. The parallelism strategy minimises the overhead of loading
+being fully independent. The parallelism strategy minimizes the overhead of loading
 models to devices by pairing initial conditions with model checkpoints.
 
 > [!Note]
-> The maximum number of GPUs that can be effectively utilised equals the product of
+> The maximum number of GPUs that can be effectively utilized equals the product of
 the number of checkpoints and initial conditions. Additional GPUs will remain idle
 during inference.
 

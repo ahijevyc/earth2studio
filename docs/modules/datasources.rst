@@ -26,6 +26,7 @@ Used for fetching initial conditions for inference and validation data for scori
    data.ARCO
    data.CDS
    data.CMIP6
+   data.CMIP6MultiRealm
    data.GFS
    data.GOES
    data.HRRR
@@ -34,9 +35,10 @@ Used for fetching initial conditions for inference and validation data for scori
    data.JPSS
    data.MRMS
    data.NCAR_ERA5
+   data.PlanetaryComputerECMWFOpenDataIFS
+   data.PlanetaryComputerMODISFire
    data.PlanetaryComputerOISST
    data.PlanetaryComputerSentinel3AOD
-   data.PlanetaryComputerMODISFire
    data.Random
    data.WB2ERA5
    data.WB2ERA5_121x240
@@ -80,6 +82,8 @@ Data sources that provide tabular data.
    :template: datasource.rst
 
    data.ISD
+   data.UFSObsConv
+   data.UFSObsSat
 
 AI Sources
 ~~~~~~~~~~

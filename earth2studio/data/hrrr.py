@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -21,7 +21,6 @@ import hashlib
 import os
 import pathlib
 import shutil
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -29,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 import gcsfs
 import nest_asyncio
 import numpy as np
+import pygrib
 import s3fs
 import xarray as xr
 from fsspec.implementations.http import HTTPFileSystem
@@ -55,9 +55,6 @@ except ImportError:
 
 logger.remove()
 logger.add(lambda msg: tqdm.write(msg, end=""), colorize=True)
-
-# Silence FutureWarning from cfgrib
-warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 @dataclass
@@ -214,7 +211,10 @@ class HRRR:
         """
         if self._source == "aws":
             self.fs = s3fs.S3FileSystem(
-                anon=self.HRRR_BUCKET_ANON, client_kwargs={}, asynchronous=True
+                anon=self.HRRR_BUCKET_ANON,
+                client_kwargs={},
+                asynchronous=True,
+                skip_instance_cache=True,
             )
         elif self._source == "google":
             fs = gcsfs.GCSFileSystem(
@@ -316,7 +316,7 @@ class HRRR:
 
         # https://filesystem-spec.readthedocs.io/en/latest/async.html#using-from-async
         if isinstance(self.fs, s3fs.S3FileSystem):
-            session = await self.fs.set_session()
+            session = await self.fs.set_session(refresh=True)
         else:
             session = None
 
@@ -358,7 +358,6 @@ class HRRR:
             *func_map, desc="Fetching HRRR data", disable=(not self._verbose)
         )
 
-        # Close aiohttp client if s3fs
         if session:
             await session.close()
 
@@ -510,11 +509,21 @@ class HRRR:
             byte_offset=byte_offset,
             byte_length=byte_length,
         )
-        # Open into xarray data-array
-        da = xr.open_dataarray(
-            grib_file, engine="cfgrib", backend_kwargs={"indexpath": ""}
-        )
-        return modifier(da.values)
+        # Load with pygrib, xarray with cfgrib is 10x slower and leaks memory
+        try:
+            grbs = pygrib.open(grib_file)
+        except Exception as e:
+            logger.error(f"Failed to open grib file {grib_file}")
+            raise e
+        try:
+            values = modifier(grbs[1].values)
+        except Exception as e:
+            logger.error(f"Failed to read grib file {grib_file}")
+            raise e
+        finally:
+            grbs.close()
+
+        return values
 
     def _validate_time(self, times: list[datetime]) -> None:
         """Verify if date time is valid for HRRR based on offline knowledge
@@ -853,7 +862,7 @@ class HRRR_FX(HRRR):
 
         # https://filesystem-spec.readthedocs.io/en/latest/async.html#using-from-async
         if isinstance(self.fs, s3fs.S3FileSystem):
-            session = await self.fs.set_session()
+            session = await self.fs.set_session(refresh=True)
         else:
             session = None
 
@@ -900,7 +909,6 @@ class HRRR_FX(HRRR):
         if not self._cache:
             shutil.rmtree(self.cache)
 
-        # Close aiohttp client if s3fs
         if session:
             await session.close()
 

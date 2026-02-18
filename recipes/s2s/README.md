@@ -15,13 +15,13 @@ Key features include:
 - Multi-GPU inference
 - Parallel, non-blocking I/O using zarr format
 - Usage of one or more diagnostic models in the forecast pipeline
-- Storage space reduction via regional output or coarsening
+- Storage space reduction using regional output or coarsening
 - Multi-GPU scoring of forecast outputs
 - Capability to score using ECMWF AIWQ S2S metrics
 
 <!-- markdownlint-disable MD033 MD013 -->
 <div align="center">
-<img src="https://huggingface.co/datasets/NickGeneva/Earth2StudioAssets/resolve/main/recipes/pnw_demo.png" width="90%" alt="Earth2Studio S2S Banner">
+<img src="https://huggingface.co/datasets/nvidia/earth2studio-assets/resolve/0.1.0/recipes/s2s/pnw_demo.png" width="90%" alt="Earth2Studio S2S Banner">
 </div>
 <!-- markdownlint-disable MD033 -->
 
@@ -180,7 +180,7 @@ uv run python main.py --config-name pnw_sfno_precip.yaml
 
 ### Configuration
 
-This recipe is highly customisable and extensible via the use of [Hydra][hydra-docs]. While
+This recipe is highly customizable and extensible using the use of [Hydra][hydra-docs]. While
 config items are documented with in-line comments in the `yaml` configuration files under
 `cfg`, we describe a few key high-level configuration settings here:
 
@@ -279,7 +279,7 @@ scoring:
 The `aiwq` subsection can be omitted if AI Weather Quest scoring is not desired. For the
 more general `metrics` section, each metric can be instantiated using hydra, and they
 will be computed for each variable specified in `scoring.variables` and saved to disk. As
-weekly averaging is common in S2S scoring, we provide a mechanism to do so via the
+weekly averaging is common in S2S scoring, we provide a mechanism to do so using the
 `scoring.temporal_aggregation`. We can also take advantage of multi-GPU execution to speed
 up the scoring process as before:
 
@@ -291,7 +291,7 @@ uv run torchrun --nproc_per_node=8 --standalone score.py --config-name global_dl
 
 To use the [AI Weather Quest](https://aiweatherquest.ecmwf.int/) scoring routines, you must
 have installed the [AI-WQ-package](https://ecmwf-ai-weather-quest.readthedocs.io/en/latest/index.html)
-and have registered with AI Weather Quest. Once you have registered, set your password in the
+and have registered with AI Weather Quest. After you have registered, set your password in the
 following environment variable before running any scoring routines:
 
 ```bash
@@ -299,13 +299,13 @@ export AIWQ_SUBMIT_PWD=<your_AI-WQ_password>
 ```
 
 This will permit you to use ECMWF's official scoring metrics computed against the official
-competition verification data. The AI Weather Quest focues on RPSS scores of
+competition verification data. The AI Weather Quest focuses on RPSS scores of
 weekly-averaged forecast outputs, computed against climatological quintiles.
 
 There are a number of limitations associated with using `AI_WQ_package` for scoring:
 
 - The initialization date of the forecast must be on a Thursday
-- The initialization date must be recent (on or after March 2025) to be able to download
+- The initialization date must be on or after March 2025 to be able to download
   the corresponding verification data. This precludes using some ERA5 data sources.
 - The scoring routines will download data (verification ERA5 data, weekly mean climatology,
   land-sea mask) when run.
@@ -317,9 +317,9 @@ an ensemble appropriate for the AI Weather Quest surface temperature variable.
 
 This recipe uses the `physicsnemo.distributed.DistributedManager` to handle multi-GPU
 execution. Example commands in this document make use of the `torchrun` launcher provided
-by PyTorch as it is widely available and compatible. To turn a single-GPU run (e.g., one
+by PyTorch as it is widely available and compatible. To turn a single-GPU run (for example, one
 launched by `uv run python main.py --config-name pnw_dlesym.yaml`) into a multi-GPU run,
-simply add `torchrun` and the number of GPUs `$ngpu` you'd like to parallelize over:
+ add `torchrun` and the number of GPUs `$ngpu` you'd like to parallelize over:
 
 ```bash
 uv run torchrun --nproc_per_node=$ngpu --standalone main.py --config-name global_dlesym
@@ -329,11 +329,11 @@ The `--standalone` argument indicate to `torchrun` that all GPUs are on the same
 machine/node; if running over multiple nodes refer to the [`torchrun` guide](https://docs.pytorch.org/docs/stable/elastic/run.html)
 for how to properly configure the process group.
 
-Note that `torchrun` is not required, and the `DistributedManager` will also work for
+`torchrun` is not required, and the `DistributedManager` will also work for
 process groups initialized with SLURM (`srun`) or MPI (`mpirun`).
 
 There are a number of considerations with multi-GPU execution worth highlighting here for
-more advanced users and developers. Primarily, certain download/caching operations in
+more advanced users and developers. Primarily, certain download and caching operations in
 Earth2studio utilities are not thread-safe, and can cause uncontrolled behavior if not run
 in a coordinated fashion:
 
@@ -344,11 +344,11 @@ in a coordinated fashion:
 
 To handle these, a utility routine `run_with_rank_ordered_execution` is provided and used
 in this recipe, which can wrap a function call and ensure that one rank (by default rank 0)
-will run the function first, before the rest. This allows e.g. filesystem objects in a
-cache or output directory to be created properly before other ranks acccess them.
+will run the function first, before the rest. This allows, for example, filesystem objects in a
+cache or output directory to be created properly before other ranks access them.
 Developers extending this recipe should use `run_with_rank_ordered_execution` for any
 operations that might lead to race conditions; however it is important that when using it,
-all ranks enter and leave the function the same number of times (i.e., execution must be
+all ranks enter and leave the function the same number of times (that is, execution must be
 load-balanced so all ranks enter and exit the barriers in the routine as expected).
 
 For the parallel I/O capabilities in this recipe, it is important to consider the chunk

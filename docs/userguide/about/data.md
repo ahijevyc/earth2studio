@@ -28,7 +28,7 @@ to generate a noise tensor:
 
 In later sections, users will find that most components have APIs that either generate
 or interact with these two data structures.
-The combonation of both the data tensor and respective coordinate system provides
+The combination of both the data tensor and respective coordinate system provides
 complete information one needs to interpret any stage of a workflow.
 
 :::{note}
@@ -49,9 +49,9 @@ Inside the package these are typed as `CoordSystem` which is defined as the foll
 CoordSystem = NewType("CoordSystem", OrderedDict[str, np.ndarray])
 ```
 
-The dictionary is ordered since the keys correspond the the dimensions of the associated
+The dictionary is ordered because the keys correspond to the dimensions of the associated
 data tensor.
-Let's consider a simple example of a 2D lat-lon grid:
+Let's consider a basic example of a 2D lat-lon grid:
 
 ```python
 x = torch.randn(181, 360)
@@ -68,7 +68,7 @@ required to.
 ### Standard Coordinate Names
 
 Earth2Studio has a dimension naming standard for its built in feature set.
-We encourage users to follow similar naming schemes for compatability between Earth-2
+We encourage users to follow similar naming schemes for compatibility between Earth-2
 Inference Studio when possible and the packages we interface with.
 
 ```{list-table}
@@ -83,18 +83,18 @@ Inference Studio when possible and the packages we interface with.
   dimension, consult batching docs for more details.
   - `np.empty(0)`
 * - `time`
-  - Time dimension, represented via numpy arrays of datetime objects.
+  - Time dimension, represented by numpy arrays of datetime objects.
   - `np.ndarray[np.datetime64[ns]]` (`TimeArray`)
 * - `lead_time`
   - Lead time is used to denote a dimension that indexes over forecast steps.
   - `np.ndarray[np.timedelta64[ns]]` (`LeadTimeArray`)
 * - `variable`
-  - Dimension representing physical variable (atmospheric, surface, etc). Earth-2
+  - Dimension representing physical variable (atmospheric, surface). Earth-2
   Inference Studio has its own naming convention. See {ref}`lexicon_userguide` docs
-  for more more details.
+  for more details.
   - `np.ndarray[str]` (`VariableArray`)
 * - `lat`
-  - Lattitude coordinate array, [-90, 90] is standard
+  - Latitude coordinate array, [-90, 90] is standard
   - `np.ndarray[float]`
 * - `lon`
   - Longitude coordinate array, [0, 360) is standard
@@ -146,11 +146,11 @@ model. In the case of FourCastNet, it's expecting a input tensor of shape `[...,
 which corresponds to `[...,lead,variables,lat,lon]`.
 
 The `output_coords()` function provides validation and transformation of coordinates
-by the model. I.e. one should be able to deduce the models output data without executing
+by the model. That is, you should be able to deduce the models output data without executing
 the forward pass of the model.
 This function requires an input coordinate system that represent the input data it
 received.
-The first step is validating the `input_coords` using the coordinate handhshake utils
+The first step is validating the `input_coords` using the coordinate handshake utils
 functions.
 Next the output coordinate systems are built.
 This function is a place to store the complexity of a model's forward process for
@@ -179,7 +179,7 @@ Output lead 2: [12]
 ```
 
 :::{note}
-The batch dimension was not discussed intentially. Think about it like a free dimension.
+The batch dimension was not discussed intentionally. Think about it like a free dimension.
 More information can be found in the {ref}`batch_function_userguide` section.
 :::
 
@@ -191,7 +191,7 @@ it into the tensor, coord data struction on the device.
 From there, the data is kept on the GPU until the very last moment when writes are
 needed to in-memory or to file.
 
-```{figure} https://huggingface.co/datasets/NickGeneva/Earth2StudioAssets/raw/main/0.2.0/e2studio-data.png
+```{figure} https://huggingface.co/datasets/nvidia/earth2studio-assets/resolve/0.1.0/docs/e2studio-data.png
 :alt: earth2studio-data
 :width: 600px
 :align: center

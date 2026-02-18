@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -19,11 +19,16 @@ from earth2studio.models.dx.cbottle_infill import CBottleInfill  # noqa
 from earth2studio.models.dx.cbottle_sr import CBottleSR  # noqa
 from earth2studio.models.dx.cbottle_tc import CBottleTCGuidance  # noqa
 from earth2studio.models.dx.climatenet import ClimateNet  # noqa
-from earth2studio.models.dx.corrdiff import CorrDiff, CorrDiffTaiwan  # noqa
+from earth2studio.models.dx.corrdiff import (
+    CorrDiff,
+    CorrDiffTaiwan,
+)
+from earth2studio.models.dx.corrdiff_cmip6 import CorrDiffCMIP6
 from earth2studio.models.dx.derived import (
     DerivedRH,
     DerivedRHDewpoint,
     DerivedSurfacePressure,
+    DerivedTCWV,
     DerivedVPD,
     DerivedWS,
 )
@@ -43,6 +48,7 @@ from earth2studio.models.dx.wind_gust import WindgustAFNO  # noqa
 __all__ = [
     "ClimateNet",
     "CorrDiff",
+    "CorrDiffCMIP6",
     "CorrDiffTaiwan",
     "PrecipitationAFNO",
     "PrecipitationAFNOv2",
