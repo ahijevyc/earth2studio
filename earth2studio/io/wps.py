@@ -51,7 +51,7 @@ class WPSBackend(IOBackend):
 
     def __init__(
         self,
-        path: Path,
+        path: str | Path,
         model_source: str = "earth2studio",
         **kwargs: Any,
     ) -> None:
@@ -60,14 +60,14 @@ class WPSBackend(IOBackend):
 
         Parameters
         ----------
-        path : Path
+        path : str | Path
             The output directory where the final forecast file will be saved.
         model_source : str, optional
             The name of the source model, used for generating the output filename.
             Defaults to "earth2studio".
         """
         super().__init__()
-        self.output_dir = path
+        self.output_dir = Path(path)
         self.model_source = model_source
         self.final_data_package: tuple | None = None
 
@@ -208,8 +208,6 @@ class WPSBackend(IOBackend):
             for name, data in zip(array_name, processed_data)
         }
         ds = xr.Dataset(data_vars, coords=coords)
-        if "lead_time" in ds.dims:
-            ds = ds.squeeze("lead_time")
 
         logger.info("Adding static fields.")
         z = SurfaceGeoPotential(cache=False)([0])
