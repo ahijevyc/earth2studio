@@ -82,14 +82,37 @@ class WPSBackend(IOBackend):
 
     def write(
         self,
-        data_list: list[np.ndarray],
-        coords: OrderedDict[str, np.ndarray],
-        array_name: str | list[str],
+        data_list: list[np.ndarray] | xr.Dataset | xr.DataArray,
+        coords: OrderedDict[str, np.ndarray] | None = None,
+        array_name: str | list[str] | None = None,
     ) -> None:
         """
-        Stores the data from the current forecast step.
+        Stores the data. Now supports xarray objects directly.
         """
-        # Always store the latest data package for the final forecast step
+        # 1. Handle xarray.Dataset
+        if isinstance(data_list, xr.Dataset):
+            ds = data_list
+            array_name = list(ds.data_vars.keys())
+            # Convert to list of numpy arrays
+            processed_data = [ds[var].values for var in array_name]
+            # Extract coords as an OrderedDict
+            coords = OrderedDict({d: ds[d].values for d in ds.dims})
+            data_list = processed_data
+
+        # 2. Handle xarray.DataArray
+        elif isinstance(data_list, xr.DataArray):
+            da = data_list
+            array_name = [da.name] if da.name else ["variable"]
+            coords = OrderedDict({d: da[d].values for d in da.dims})
+            data_list = [da.values]
+
+        # 3. Fallback to standard earth2studio list/ndarray input
+        if coords is None or array_name is None:
+            raise ValueError(
+                "coords and array_name are required if data_list is not an xarray object."
+            )
+
+        # Store for the .close() method logic
         self.final_data_package = (data_list, coords, array_name)
 
     def _write_complete_field(
@@ -184,7 +207,9 @@ class WPSBackend(IOBackend):
             name: (list(coords.keys()), data)
             for name, data in zip(array_name, processed_data)
         }
-        ds = xr.Dataset(data_vars, coords=coords).squeeze("lead_time")
+        ds = xr.Dataset(data_vars, coords=coords)
+        if "lead_time" in ds.dims:
+            ds = ds.squeeze("lead_time")
 
         logger.info("Adding static fields.")
         z = SurfaceGeoPotential(cache=False)([0])
