@@ -43,11 +43,15 @@ from earth2studio.utils.type import CoordSystem
 
 try:
     from omegaconf import OmegaConf
-    from physicsnemo.models import Module as PhysicsNemoModule
-    from physicsnemo.utils.generative import deterministic_sampler
+    from physicsnemo.diffusion.preconditioners.legacy import EDMPrecond
+    from physicsnemo.diffusion.samplers.legacy_deterministic_sampler import (
+        deterministic_sampler,
+    )
+    from physicsnemo.models.diffusion_unets import StormCastUNet
 except ImportError:
     OptionalDependencyFailure("stormcast")
-    PhysicsNemoModule = None
+    StormCastUNet = None
+    EDMPrecond = None
     OmegaConf = None
     deterministic_sampler = None
 
@@ -129,6 +133,11 @@ class StormCast(torch.nn.Module, AutoModelMixin, PrognosticMixin):
         Data Source to use for global conditioning. Required for running in iterator mode, by default None
     sampler_args : dict[str, float  |  int], optional
         Arguments to pass to the diffusion sampler, by default {}
+
+    Badges
+    ------
+    region:na class:nwc product:wind product:temp product:radar product:atmos year:2024
+    gpu:40gb
     """
 
     def __init__(
@@ -244,7 +253,7 @@ class StormCast(torch.nn.Module, AutoModelMixin, PrognosticMixin):
     def load_default_package(cls) -> Package:
         """Load prognostic package"""
         package = Package(
-            "hf://nvidia/stormcast-v1-era5-hrrr@39afdc7848766011a7e76c65af77f2853e079f45",
+            "hf://nvidia/stormcast-v1-era5-hrrr@6c89a0877a0d6b231033d3b0d8b9828a6f833ed8",
             cache_options={
                 "cache_storage": Package.default_cache("stormcast"),
                 "same_names": True,
@@ -287,11 +296,14 @@ class StormCast(torch.nn.Module, AutoModelMixin, PrognosticMixin):
         # load model registry:
         config = OmegaConf.load(package.resolve("model.yaml"))
 
-        regression = PhysicsNemoModule.from_checkpoint(
-            package.resolve("StormCastUNet.0.0.mdlus")
+        # TODO: remove strict=False once checkpoints/imports updated to new diffusion API
+        regression = StormCastUNet.from_checkpoint(
+            package.resolve("StormCastUNet.0.0.mdlus"),
+            strict=False,
         )
-        diffusion = PhysicsNemoModule.from_checkpoint(
-            package.resolve("EDMPrecond.0.0.mdlus")
+        diffusion = EDMPrecond.from_checkpoint(
+            package.resolve("EDMPrecond.0.0.mdlus"),
+            strict=False,
         )
 
         # Load metadata: means, stds, grid

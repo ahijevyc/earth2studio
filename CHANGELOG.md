@@ -7,22 +7,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.13.0a0] - 2026-03-xx
+## [0.14.0a0] - xxxx-xx-xx
 
 ### Added
 
-- Added NOAA UFS observation dataframe sources for satellite and conventional data
-- Added Earth2Studio base schema for dataframe sources
-- Added Planetary Computer data source for ECMWF IFS analysis data
-- Added accumulated variable support to NCAR ERA5 data source
-- Added Planetary Computer data source for GOES cloud and moisture imagery
-- Added ability to have seperate data and model cache locations via env variables
-
 ### Changed
-
-- Changed available date for ARCO data source to be dynamically updated
-- Changed ISD data frame return to master schema
-- Updated CBottle infill to mixture of model checkpoints
 
 ### Deprecated
 
@@ -30,9 +19,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Bug in cbottle datasource resulting identical samples for multiple samples
-
 ### Security
+
+### Dependencies
+
+## [0.13.0] - 2026-03-20
+
+### Added
+
+- Added NOAA UFS observation dataframe sources for satellite and conventional data
+- Added Earth2Studio base schema for dataframe sources
+- Added Planetary Computer data source for ECMWF IFS analysis data
+- Added accumulated variable support to NCAR ERA5 data source
+- Added routine to tile tensors to higher-dimensional tensors
+- Added routine to concatenate tensors along specified coordinate dimension
+- Added Planetary Computer data source for GOES cloud and moisture imagery
+- Added ability to have seperate data and model cache locations via env variables
+- Added random dataframe source
+- Added base reflectivity to MRMS data source
+- Added `fetch_dataframe` utility function
+- Added data assimilation model class
+- Added equirectangular interpolation data assimilation model
+- Added StormCast SDA model
+- Added beta serve utils with inference server and client implementations
+- Added HealPix data assimilation (HealDA) model
+- Added `energy_score` metric for multivariate ensemble forecast verification
+
+### Changed
+
+- Changed available date for ARCO data source to be dynamically updated
+- Changed ISD data frame return to master schema
+- handshake_coords is now accepting list of dimensions while remaining backwards-compatible
+- Updated CBottle infill to mixture of model checkpoints
+- Updated GraphCastOperational and GraphCastSmall latitude input / output to be [90,-90]
+- Updated GraphCast models to support multiple time inputs, multiple times will be looped not batched
+- Renamed `tolerance` parameter in ISD data source to `time_tolerance`
+
+### Removed
+
+- Removed device from cbottle SR load_model api
+
+### Fixed
+
+- Fixed timezone bug in `CBottleVideo` that converted UTC time to local system time
+- Bug in cbottle datasource resulting identical samples for multiple samples
+- Bug in StormCast loading out-of-date model package, introduced in `5518edecbabee371c824b34f0f2ec269a4d6094f`
+- Bug in spherical perturbations which did not use lmax from the SHT transform
 
 ### Dependencies
 
@@ -40,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated CBottle repo to NVlabs location
 - Updated Makani dependency hash to later version with pyproject toml fix
 - Updated ACE2 dependency hash with setuptools fix
+- Updated models using PhysicsNeMo to compliance with `nvidia-physicsnemo>=2.0`
 
 ## [0.12.1] - 2026-01-29
 
