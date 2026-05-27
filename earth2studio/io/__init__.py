@@ -18,5 +18,6 @@ from .async_zarr import AsyncZarrBackend
 from .base import IOBackend
 from .kv import KVBackend
 from .netcdf4 import NetCDF4Backend
+from .wps import WPSBackend
 from .xarray import XarrayBackend
 from .zarr import ZarrBackend
