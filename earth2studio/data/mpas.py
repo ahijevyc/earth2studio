@@ -238,7 +238,7 @@ class MPASPres(_MPASBase):
             return self._finalize_dataset(ds_regridded, variables)
         else:
             # Direct-use path: process a list of times, return a time-aware DataArray.
-            results = []
+            results: list[xr.DataArray] = []
             for t in time:
                 ds_regridded = self._load_and_process(t, sorted_variables)
                 da_slice = self._finalize_dataset(ds_regridded, variables)
@@ -346,7 +346,12 @@ class MPASHybrid(_MPASBase):
         """
 
         def ensure_vertical_pressure_ascending(ds_in: xr.Dataset) -> xr.Dataset:
-            """Ensure native vertical dimensions increase in pressure with index."""
+            """
+            Ensure native vertical dimensions increase in pressure with index.
+            Why? After all, ECMWF starts from the top and moves down with index.
+            Because target_levels_pa is sorted in ascending order and np.interp
+            needs ascending order too.
+            """
             ds_out = ds_in
 
             if "pressure" in ds_out and "nVertLevels" in ds_out["pressure"].dims:
@@ -418,8 +423,8 @@ class MPASHybrid(_MPASBase):
             elif interp_type != "linear":
                 raise ValueError(f"Unexpected interp_type {interp_type}")
 
-            # Set values outside model to NaN.
-            return np.interp(interp_target_x, interp_x, data, left=np.nan, right=np.nan)
+            # Set values above model to NaN and values below model to last element.
+            return np.interp(interp_target_x, interp_x, data, left=np.nan)
 
         def vectorized_top_fill(
             data: np.ndarray,
@@ -549,7 +554,6 @@ class MPASHybrid(_MPASBase):
                 logger.info(f"Interpolating variable: {name}")
                 pressure_field = ds["pressure"] if is_main else ds["pressure_on_w"]
                 vert_dim = "nVertLevels" if is_main else "nVertLevelsP1"
-                lowest_model_level = -1
 
                 # Select log or linear interpolation in pressure.
                 # log for geopotential and wind
@@ -586,10 +590,33 @@ class MPASHybrid(_MPASBase):
                 # Get above-model-top and below-surface masks. of
                 # all pts that need filling.
                 nan_mask = interp_da.isnull()
-                top_pressure = pressure_field.min(dim=vert_dim)
-                bottom_pressure = pressure_field.max(dim=vert_dim)
+                top_pressure = pressure_field.isel({vert_dim: 0})
+                bottom_pressure = pressure_field.isel({vert_dim: -1})
                 above_top_mask = nan_mask & (target_levels_pa_da < top_pressure)
-                below_surface_mask = nan_mask & (target_levels_pa_da > bottom_pressure)
+                below_surface_mask = target_levels_pa_da > bottom_pressure
+
+                # Debug: Check shapes and comparisons
+                logger.debug(
+                    f"For {name}: target_levels_pa_da dims={target_levels_pa_da.dims}, shape={target_levels_pa_da.shape}"
+                )
+                logger.debug(
+                    f"For {name}: top_pressure dims={top_pressure.dims}, shape={top_pressure.shape}"
+                )
+                logger.debug(
+                    f"For {name}: bottom_pressure dims={bottom_pressure.dims}, shape={bottom_pressure.shape}"
+                )
+                logger.debug(
+                    f"For {name}: nan_mask dims={nan_mask.dims}, shape={nan_mask.shape}"
+                )
+                logger.debug(
+                    f"For {name}: above_top_mask dims={above_top_mask.dims}, below_surface_mask dims={below_surface_mask.dims}"
+                )
+                logger.debug(
+                    f"For {name}: nan_mask.sum()={nan_mask.sum().item()}, above_top_mask.sum()={above_top_mask.sum().item()}, below_surface_mask.sum()={below_surface_mask.sum().item()}"
+                )
+                logger.info(
+                    f"For {name}: total accounted (top+below)={above_top_mask.sum().item() + below_surface_mask.sum().item()}, unaccounted={nan_mask.sum().item() - above_top_mask.sum().item() - below_surface_mask.sum().item()}"
+                )
 
                 is_wind = name in {"uReconstructMeridional", "uReconstructZonal"}
                 is_humidity = name in moisture_vars_to_interp
@@ -626,9 +653,13 @@ class MPASHybrid(_MPASBase):
                 top_fill_da = top_fill_nocoords.assign_coords(
                     level=target_levels_pa_da.level
                 )
+                logger.info(
+                    f"For {name}: before top-fill, NaN count={interp_da.isnull().sum().item()}, above_top_mask.sum()={above_top_mask.sum().item()}, top_fill_da.isnull().sum()={top_fill_da.isnull().sum().item()}"
+                )
                 interp_da = xr.where(above_top_mask, top_fill_da, interp_da)
-
-                surface_pressure = ds["surface_pressure"]
+                logger.info(
+                    f"For {name}: after top-fill, NaN count={interp_da.isnull().sum().item()}"
+                )
 
                 logger.info(f"Extrapolating {name} below surface")
                 # Considered FULL-POS CYCLE 46T1R1
@@ -638,7 +669,7 @@ class MPASHybrid(_MPASBase):
                 # just the bottom layer? Plus, getting surface temperature in high topography is hard (Eqn (2)-(5)).
 
                 # Follow Trenberth Eqn (15) The order of pressures inside the logarithm make sense.
-                ln_pressure_ratio = np.log(target_levels_pa_da / surface_pressure)
+                ln_pressure_ratio = np.log(target_levels_pa_da / ds["surface_pressure"])
                 alpha = STANDARD_LAPSE_RATE * dry_air_gas_constant / g
                 y = alpha * ln_pressure_ratio
                 if name == "temperature":
@@ -746,11 +777,7 @@ class MPASHybrid(_MPASBase):
                     )
 
                 else:
-                    # For all other variables, fill below-ground by persisting surface value
-                    surface_value = da.isel(
-                        {vert_dim: lowest_model_level}
-                    ).metpy.dequantify()
-                    final_da = xr.where(below_surface_mask, surface_value, interp_da)
+                    final_da = interp_da
 
                 interpolated_vars[name] = final_da
 
@@ -842,6 +869,7 @@ class MPASHybrid(_MPASBase):
 
         requested_variables = tuple(sorted(set(recipe_variables.values())))
         source_variables = self.lexicon.required_variables(list(requested_variables))
+        source_variables.extend("pressure")
 
         time_pd = pd.to_datetime(time)
         path_str = time_pd.strftime(self.data_path)
@@ -1007,7 +1035,7 @@ class MPASHybrid(_MPASBase):
             return self._finalize_dataset(ds_regridded, variables)
         else:
             # Direct-use path: process a list of times, return a time-aware DataArray.
-            results = []
+            results: list[xr.DataArray] = []
             for t in time:
                 ds_regridded = self._load_and_process(t, sorted_variables)
                 da_slice = self._finalize_dataset(ds_regridded, variables)

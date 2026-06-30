@@ -300,6 +300,7 @@ class MPASHybridLexicon(metaclass=LexiconType):
                 elif var in ["msl", "surface_temperature"]:  # mean sea level pressure
                     required.update(
                         [
+                            "pressure",  # in case pressure already exists but pressure_base and pressure_p do not
                             "pressure_base",
                             "pressure_p",
                             "surface_pressure",
@@ -321,7 +322,10 @@ class MPASHybridLexicon(metaclass=LexiconType):
             # --- Everything below this point is a 3D variable ---
             base_var = re.sub(r"\d+$", "", var)
             required.add(cls.get_item(base_var))
-            required.update(["pressure_p", "pressure_base", "surface_pressure"])
+            # add "pressure" in case pressure already exists but pressure_base and pressure_p do not
+            required.update(
+                ["pressure", "pressure_p", "pressure_base", "surface_pressure"]
+            )
             if base_var in ["t", "z"]:
                 # to interpolate geopotential below surface (in MPASHybrid DataSource).
                 required.update(

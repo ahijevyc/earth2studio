@@ -366,9 +366,22 @@ class GraphCastOperational(torch.nn.Module, AutoModelMixin, PrognosticMixin):
         """
 
         # Create copies to avoid mutating inputs.
-        inputs = xr.Dataset(inputs)
-        targets_template = xr.Dataset(targets_template)
-        forcings = xr.Dataset(forcings)
+        # Create copies to avoid mutating inputs.
+        inputs = (
+            inputs.copy(deep=True)
+            if isinstance(inputs, xr.Dataset)
+            else xr.Dataset(inputs)
+        )
+        targets_template = (
+            targets_template.copy(deep=True)
+            if isinstance(targets_template, xr.Dataset)
+            else xr.Dataset(targets_template)
+        )
+        forcings = (
+            forcings.copy(deep=True)
+            if isinstance(forcings, xr.Dataset)
+            else xr.Dataset(forcings)
+        )
 
         # Our template targets will always have a time axis corresponding for the
         # timedeltas for the first chunk.
