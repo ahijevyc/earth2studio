@@ -614,8 +614,8 @@ class MPASHybrid(_MPASBase):
                 logger.debug(
                     f"For {name}: nan_mask.sum()={nan_mask.sum().item()}, above_top_mask.sum()={above_top_mask.sum().item()}, below_surface_mask.sum()={below_surface_mask.sum().item()}"
                 )
-                logger.info(
-                    f"For {name}: total accounted (top+below)={above_top_mask.sum().item() + below_surface_mask.sum().item()}, unaccounted={nan_mask.sum().item() - above_top_mask.sum().item() - below_surface_mask.sum().item()}"
+                logger.debug(
+                    f"For {name}: total unaccounted={nan_mask.sum().item() - above_top_mask.sum().item()}"
                 )
 
                 is_wind = name in {"uReconstructMeridional", "uReconstructZonal"}
@@ -653,11 +653,11 @@ class MPASHybrid(_MPASBase):
                 top_fill_da = top_fill_nocoords.assign_coords(
                     level=target_levels_pa_da.level
                 )
-                logger.info(
+                logger.debug(
                     f"For {name}: before top-fill, NaN count={interp_da.isnull().sum().item()}, above_top_mask.sum()={above_top_mask.sum().item()}, top_fill_da.isnull().sum()={top_fill_da.isnull().sum().item()}"
                 )
                 interp_da = xr.where(above_top_mask, top_fill_da, interp_da)
-                logger.info(
+                logger.debug(
                     f"For {name}: after top-fill, NaN count={interp_da.isnull().sum().item()}"
                 )
 
