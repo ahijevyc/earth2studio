@@ -22,30 +22,32 @@ generated data.
 - `.venv/`
 - `__pycache__/`
 
-## Recommended long-term home
+## How to Run
 
-Keep this as a small project repo, for example `aifs2ens/`, and point the
-Earth2Studio dependency at a dedicated branch in your `ahijevyc/earth2studio`
-fork instead of vendoring the library here.
+1. Get on a GPU node (`gpu-type=a100_80gb`) and make sure the `gcc` module is
+   loaded.
+2. Activate the environment:
+   ```csh
+   source .venv/bin/activate.csh
+   ```
+3. Run the analysis wrapper script:
+   ```csh
+   uv run python run_aifs.py
+   ```
 
-Example dependency line in `pyproject.toml`:
+### `run_aifs.py` environment variables
 
-```toml
-[tool.uv.sources]
-earth2studio = { git = "https://github.com/ahijevyc/earth2studio.git", branch = "ahijevyc/aifs2ens" }
-```
+- `AIFS_DATA_SOURCE` -- `ERA5_GFS` (default) uses ARCO (ERA5) as the primary
+  analysis source with GFS fallback for variables missing from ARCO; `GFS`
+  uses GFS only.
+- `AIFS_START_TIMES` -- comma-separated init times, e.g.
+  `"2025-06-24 00:00,2025-07-01 00:00"` (default: `2025-06-24 00:00`).
+- `AIFS_OVERWRITE` -- `1`/`true`/`yes` deletes and rebuilds existing member
+  stores instead of appending new init times to them (default: off).
 
-If you prefer a different branch name, update that line accordingly.
-
-## Recreate the environment
-
-```bash
-uv sync
-uv run python plot_point_pdfs.py
-```
-
-## Notes
-
-- This project is separate from other Earth2Studio project directories such as
-	`earth2studio-mpas` and `earth2studio-pangu`.
-- Large ensemble member stores stay in scratch storage and are not committed.
+If the uv environment gets corrupted, see notes in the hand-written notebook,
+such as:
+- uv cache clean
+- uv add "earth2studio @ git+https://github.com/NVIDIA/earth2studio.git"
+- uv add earth2studio --extra aifs2ens
+- uv pip install wheel packaging torch ninja

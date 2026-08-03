@@ -13,8 +13,8 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-earth2studio = { git = "https://github.com/ahijevyc/earth2studio.git", branch = "ahijevyc/aifs2ens" }
 torch = { index = "pytorch-cu121" }
+earth2studio = { git = "https://github.com/NVIDIA/earth2studio.git" }
 
 [[tool.uv.index]]
 name = "pytorch-cu121"

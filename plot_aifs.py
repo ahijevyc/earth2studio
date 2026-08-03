@@ -11,7 +11,7 @@ from pathlib import Path
 from earth2studio.data import ARCO, GFS
 
 def main():
-    ic = 'ARCOWithGFSFallback'
+    ic = 'ERA5WithGFSFallback'
     ensemble_store = Path(f"AIFS2ENS_{ic}_ensemble.zarr")
     if False and ensemble_store.exists():
         print(f"Opening repacked ensemble store: {ensemble_store}...")
@@ -25,8 +25,8 @@ def main():
             concat_dim="ensemble",
             consolidated=False,
             parallel=True,
-            compat="override",
-            join="override",
+            compat="no_conflicts",
+            join="outer",
             coords='minimal',
         )
     print(f"Done.")
