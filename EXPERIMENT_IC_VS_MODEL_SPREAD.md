@@ -152,16 +152,14 @@ previously they existed only in a session scratchpad.
 
 - **RMSE**: computed for both arms (`arm_a_rmse.npz`, `arm_b_rmse.npz`) via
   `compute_arm_a_rmse.py` / `compute_arm_b_rmse.py`.
-- **Spread**: Arm B recomputed correctly via `compute_spread_correct.py` ->
-  `arm_b_spread_regions_v3.npz` (see caveat 7 above for the bug this fixes).
-  The pre-fix `arm_b_spread_regions.npz` is still present in the working
-  directory but is **stale/wrong** -- don't use it.
-- **Outstanding**: Arm A's corrected spread output
-  (`arm_a_spread_regions_v3.npz`) was generated during debugging but only
-  exists in a prior session's scratchpad, not in this directory or the repo.
-  It needs to be regenerated with `compute_spread_correct.py` against
-  `arm_a_cache.zarr` (and saved into this directory) before any Arm A or
-  calibration-ratio plot can be regenerated/trusted going forward.
+- **Spread**: both arms now correct, in this directory. `arm_b_spread_regions_v3.npz`
+  via `compute_spread_correct.py` (see caveat 7 above for the bug this fixes).
+  `arm_a_spread_regions_v3.npz` was independently re-verified (2026-08-28) by
+  rerunning `compute_spread_correct.py arm_a_cache.zarr arm_a_spread_regions_v3.npz`
+  and confirming the output is bit-for-bit identical to the version generated
+  during debugging -- now copied into this directory instead of depending on a
+  prior session's scratchpad. The pre-fix `arm_b_spread_regions.npz` is still
+  present in the working directory but is **stale/wrong** -- don't use it.
 - Plotting scripts (`plot_arm_a_spread_*.py`, `plot_arm_calibration_ratio.py`,
   `plot_arm_comparison.py`) exist and consume the above npz files, but are
   not yet committed to the repo.
